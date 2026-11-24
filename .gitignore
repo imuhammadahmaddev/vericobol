@@ -1,0 +1,28 @@
+# CRITICAL: Do NOT ignore .kiro/ — required for Kiroween 2026 judging
+
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Node / Next.js
+node_modules/
+frontend/.next/
+frontend/out/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.hypothesis/
+
+# COBOL sandbox artifacts
+tmp_cobol/
+*.bin
+*.exe
+*.out
+
+# OS
+.DS_Store
