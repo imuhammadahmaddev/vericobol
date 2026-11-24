@@ -1,0 +1,41 @@
+{
+  "loan_calc": {
+    "preset_id": "loan_calc",
+    "name": "Loan Amortization Calculator",
+    "description": "Computes the monthly payment, total interest, and total payable for a fixed-rate loan from principal, annual rate, and term in months.",
+    "source_file": "loan_calc.cbl",
+    "input_schema": [
+      {"name": "principal", "label": "Principal", "min": "0.01", "max": "10000000.00", "step": "100.00"},
+      {"name": "annual_rate_pct", "label": "Annual Rate %", "min": "0.000", "max": "100.000", "step": "0.001"},
+      {"name": "term_months", "label": "Term (Months)", "min": "1", "max": "360", "step": "1"}
+    ],
+    "sample_input": {"principal": "250000.00", "annual_rate_pct": "6.500", "term_months": "360"}
+  },
+  "compound_int": {
+    "preset_id": "compound_int",
+    "name": "Compound Interest Engine",
+    "description": "Computes the maturity amount and accrued interest for a deposit compounded a fixed number of times per year.",
+    "source_file": "compound_int.cbl",
+    "input_schema": [
+      {"name": "principal", "label": "Principal", "min": "0.00", "max": "100000.00", "step": "100.00"},
+      {"name": "annual_rate_pct", "label": "Annual Rate %", "min": "0.000", "max": "20.000", "step": "0.001"},
+      {"name": "compounds_per_year", "label": "Compounds per Year", "min": "1", "max": "12", "step": "1"},
+      {"name": "years", "label": "Years", "min": "1", "max": "30", "step": "1"}
+    ],
+    "sample_input": {"principal": "10000.00", "annual_rate_pct": "5.000", "compounds_per_year": "12", "years": "10"}
+  },
+  "daily_ledger": {
+    "preset_id": "daily_ledger",
+    "name": "Daily Ledger Reconciler",
+    "description": "Computes the closing balance, overdraft fee applied, and overdraft flag from opening balance, deposits, withdrawals, and an overdraft rule.",
+    "source_file": "daily_ledger.cbl",
+    "input_schema": [
+      {"name": "opening_balance", "label": "Opening Balance", "min": "-100000000.00", "max": "100000000.00", "step": "10.00"},
+      {"name": "deposits", "label": "Deposits", "min": "0.00", "max": "100000000.00", "step": "10.00"},
+      {"name": "withdrawals", "label": "Withdrawals", "min": "0.00", "max": "100000000.00", "step": "10.00"},
+      {"name": "overdraft_threshold", "label": "Overdraft Threshold", "min": "-100000000.00", "max": "100000000.00", "step": "10.00", "default": "0.00"},
+      {"name": "overdraft_fee", "label": "Overdraft Fee", "min": "0.00", "max": "99999.99", "step": "1.00"}
+    ],
+    "sample_input": {"opening_balance": "1000.00", "deposits": "250.50", "withdrawals": "1500.75", "overdraft_threshold": "0.00", "overdraft_fee": "35.00"}
+  }
+}
