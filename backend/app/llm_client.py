@@ -231,17 +231,19 @@ def parse_inferred_program(data: Any) -> InferredProgram:
         where = f"contract.inputs[{i}]"
         if not isinstance(f, dict):
             raise _SchemaError(f"{where} must be an object")
-        inputs.append(
-            {
-                "name": _req_str(f, "name", where),
-                "label": _req_str(f, "label", where),
-                "pic": _req_str(f, "pic", where),
-                "scale": _scale(f, where),
-                "min": _opt_decimal(f, "min", where),
-                "max": _opt_decimal(f, "max", where),
-                "step": _opt_decimal(f, "step", where),
-            }
-        )
+        item: dict[str, Any] = {
+            "name": _req_str(f, "name", where),
+            "label": _req_str(f, "label", where),
+            "pic": _req_str(f, "pic", where),
+            "scale": _scale(f, where),
+            "min": _opt_decimal(f, "min", where),
+            "max": _opt_decimal(f, "max", where),
+            "step": _opt_decimal(f, "step", where),
+        }
+        default = _opt_decimal(f, "default", where)
+        if default is not None:
+            item["default"] = default
+        inputs.append(item)
     outputs: list[dict[str, Any]] = []
     for i, f in enumerate(raw_out):
         where = f"contract.outputs[{i}]"
@@ -296,7 +298,7 @@ def _dumps(obj: Any) -> str:
 
 _SYSTEM = (
     "You are a COBOL modernization engine for banking code. Reply with a single "
-    "JSON object only. Never use floats for money; use decimal.Decimal."
+    "JSON object only. Never use floats for money; use Decimal."
 )
 
 _INFER_PROMPT = (
@@ -310,8 +312,79 @@ _INFER_PROMPT = (
     '"flag" | "text"}]}, "business_rules": [plain-English str], '
     '"dashboard_metadata": {"title": str, "chart_type": "bar_comparison" | '
     '"breakdown" | "waterfall" | "summary", "inputs": [..], "outputs": [..]}}. '
-    "Use no_input_static only when the program reads no input."
+    "Use no_input_static only when the program reads no input. "
+    "For every input choose a realistic, non-overflowing operational min and max "
+    "that sit safely inside the field's PIC capacity so intermediate COBOL sums "
+    "and products never silently wrap around (for PIC S9(9)V99 balances use "
+    'min "-1000000.00", max "1000000.00", step "10.00", not -999999999.99). '
+    'Also give every input a realistic "default" decimal string inside [min, max] '
+    '(for example "1000.00", "5.000", "12"). min, max, step and default are '
+    "decimal strings with the field's scale."
 )
+
+_SANDBOX_RULES = (
+    "SANDBOX RULES (the code runs in a restricted interpreter):\n"
+    "1. NO import statements at all, not even `from decimal import Decimal`. "
+    "`Decimal`, `ROUND_HALF_UP` and `ROUND_DOWN` are already defined as globals. "
+    "Never write `decimal.Decimal` or `decimal.Context(...)`; call `Decimal(...)` "
+    'and `.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)` (or ROUND_DOWN) directly.\n'
+    "2. SCALAR-IN, SCALAR-OUT ONLY. Whatever the io_protocol (batch_space, "
+    "single_run_lines, single_run_space, no_input_static), `def calculate(**inputs) "
+    "-> dict:` is called once per single test case with scalar inputs (Decimal for "
+    "decimal fields, int for scale-0 integer fields, already validated and finite). "
+    "It MUST return a flat dict mapping each output field name to a single scalar "
+    "Decimal or int. Never lists, never batch arrays, never dicts of lists.\n"
+    "3. Allowed builtins ONLY: abs, min, max, int, len, range, sum, divmod, round, "
+    "bool. Do not use isinstance, str, zip, enumerate, any, all, ValueError, "
+    "KeyError, classes or generator expressions. Write plain `for` loops and "
+    "if/else statements.\n"
+    "4. Match COBOL exactly: ROUNDED means ROUND_HALF_UP, no ROUNDED means "
+    "truncation (ROUND_DOWN). Quantize only where COBOL stores into a field and "
+    "keep intermediate multiplications and divisions exact in Decimal.\n"
+)
+
+_SANDBOX_EXAMPLE = (
+    "Example of the expected style:\n"
+    "def calculate(**inputs) -> dict:\n"
+    '    p = inputs["principal"]\n'
+    '    r = inputs["rate"] / Decimal(1200)\n'
+    '    fee = (p * r).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)\n'
+    '    total = (p + fee).quantize(Decimal("0.01"), rounding=ROUND_DOWN)\n'
+    '    return {"fee": fee, "total": total}\n'
+)
+
+_NO_FLOAT_RULE = (
+    "5. NEVER write the identifier `float` anywhere (not in comments or type "
+    "checks) and never write float literals such as 0.0 or 100.0. Use "
+    'Decimal("0.00") and Decimal(100).\n'
+)
+
+_FLOAT_DEMO_RULE = (
+    "5. DEMONSTRATION: do the arithmetic directly with Python float operations "
+    "(float(...), /, **, round(..., 2) or int(x * 100) / 100) so real IEEE-754 "
+    "drift shows against GnuCOBOL. Still no imports, no generator expressions, no "
+    "isinstance or ValueError, and scalar-in, scalar-out only.\n"
+)
+
+_DECIMAL_IMPORT = re.compile(
+    r"^[ \t]*(?:import[ \t]+decimal(?:[ \t]+as[ \t]+\w+)?|from[ \t]+decimal[ \t]+import[ \t]+[^\n]*)[ \t]*(?:#[^\n]*)?$\r?\n?",
+    re.MULTILINE,
+)
+_DECIMAL_ATTR = re.compile(r"\bdecimal\.(Decimal|ROUND_HALF_UP|ROUND_DOWN)\b")
+
+
+def _clean_generated_code(code: str) -> str:
+    """Strip markdown fences, decimal-only imports and ``decimal.`` prefixes.
+
+    Other imports are left alone so the AST sandbox still rejects them.
+    """
+    body = code.strip()
+    if body.startswith("```"):
+        body = _FENCE_OPEN.sub("", body, count=1)
+        body = _FENCE_CLOSE.sub("", body, count=1)
+    body = _DECIMAL_IMPORT.sub("", body)
+    body = _DECIMAL_ATTR.sub(r"\1", body)
+    return body.strip() + "\n"
 
 
 class LLMClient:
@@ -361,22 +434,12 @@ class LLMClient:
     def generate_python(
         self, cobol_source: str, program: InferredProgram, *, float_demo: bool = False
     ) -> "ArchitectOutput":
-        if float_demo:
-            style = (
-                "DEMONSTRATION: write a deliberately naive translation that uses "
-                "Python float arithmetic and no rounding control. "
-            )
-        else:
-            style = (
-                "Use decimal.Decimal with an explicit decimal.Context matching the "
-                "PIC scale and capacity. Stores without ROUNDED use ROUND_DOWN; "
-                "stores with ROUNDED use ROUND_HALF_UP. No floats, float literals, "
-                "math.pow or float-operand `**`. Only import decimal. "
-            )
+        style = _SANDBOX_RULES + (_FLOAT_DEMO_RULE if float_demo else _NO_FLOAT_RULE)
         prompt = (
-            "Write standalone Python 3.12 source defining `def calculate(**inputs) "
-            "-> dict` that reproduces this COBOL program exactly. "
+            "Write Python 3.12 source defining `def calculate(**inputs) -> dict` "
+            "that reproduces this COBOL program exactly.\n"
             + style
+            + _SANDBOX_EXAMPLE
             + 'Return JSON: {"verified_python_code": str, "dashboard_metadata": object}.\n\n'
             f"Contract: {_dumps(program.contract)}\n"
             f"Protocol: {program.io_protocol}\n"
@@ -390,12 +453,16 @@ class LLMClient:
         program: InferredProgram,
         counterexample: Any,
         previous_code: str,
+        *,
+        float_demo: bool = False,
     ) -> "ArchitectOutput":
+        style = _SANDBOX_RULES + (_FLOAT_DEMO_RULE if float_demo else _NO_FLOAT_RULE)
         prompt = (
             "The Python below disagrees with the real COBOL on the counterexample. "
-            "Fix it with Decimal arithmetic only (ROUND_DOWN without ROUNDED, "
-            "ROUND_HALF_UP with ROUNDED, explicit decimal.Context, no floats). "
-            'Return JSON: {"verified_python_code": str, "dashboard_metadata": object}.\n\n'
+            "Fix it so it matches the COBOL exactly.\n"
+            + style
+            + _SANDBOX_EXAMPLE
+            + 'Return JSON: {"verified_python_code": str, "dashboard_metadata": object}.\n\n'
             f"Counterexample: {_dumps(counterexample)}\n"
             f"Contract: {_dumps(program.contract)}\n"
             f"Protocol: {program.io_protocol}\n"
@@ -412,7 +479,9 @@ class LLMClient:
         meta = data.get("dashboard_metadata") if isinstance(data, dict) else None
         if not isinstance(code, str) or not code.strip() or not isinstance(meta, dict):
             raise LLMCallError(stage, "response did not match the expected schema")
-        return ArchitectOutput(verified_python_code=code, dashboard_metadata=meta)
+        return ArchitectOutput(
+            verified_python_code=_clean_generated_code(code), dashboard_metadata=meta
+        )
 
     # ------------------------------------------------------------------- _call
     def _call(self, stage: str, prompt: str) -> Any:
@@ -435,14 +504,18 @@ class LLMClient:
                 timeout=TIMEOUT_SECONDS,
                 max_retries=0,
             )
-            resp = client.chat.completions.create(
-                model=self.config.model,
-                messages=[
+            request: dict[str, Any] = {
+                "model": self.config.model,
+                "messages": [
                     {"role": "system", "content": _SYSTEM},
                     {"role": "user", "content": prompt},
                 ],
-                response_format={"type": "json_object"},
-            )
+                "response_format": {"type": "json_object"},
+            }
+            try:
+                resp = client.chat.completions.create(reasoning_effort="low", **request)
+            except Exception:  # noqa: BLE001 - endpoint may not accept reasoning_effort
+                resp = client.chat.completions.create(**request)
         except Exception:  # noqa: BLE001 - normalized; raw error may hold secrets
             raise LLMUnavailable("provider_failure") from None
 

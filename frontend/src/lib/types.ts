@@ -247,6 +247,8 @@ export interface DashboardInputMeta {
   min: MoneyString;
   max: MoneyString;
   step: MoneyString;
+  /** Realistic starting value chosen by the legacy parser (optional). */
+  default?: MoneyString;
 }
 
 export interface DashboardOutputMeta {

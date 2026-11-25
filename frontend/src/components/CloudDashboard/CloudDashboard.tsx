@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useCalculate } from "@/hooks/useCalculate";
-import { formatMoneyString } from "@/lib/money";
+import { compareDecimalStrings, formatMoneyString } from "@/lib/money";
 import {
   ApiError,
+  type DashboardInputMeta,
   type MoneyString,
   type PydanticFieldError,
   type ResurrectResponse,
@@ -21,6 +22,22 @@ export interface CloudDashboardProps {
   onStdout?: (stdout: string) => void;
   /** Fired whenever the input values change. */
   onInputsChange?: (inputs: Record<string, MoneyString>) => void;
+}
+
+function inRange(v: string, f: DashboardInputMeta): boolean {
+  try {
+    return compareDecimalStrings(v, f.min) >= 0 && compareDecimalStrings(v, f.max) <= 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Starting value: field.default if valid and in range, else zero (at the field's scale) if in range, else min. */
+function initialValue(f: DashboardInputMeta): MoneyString {
+  if (f.default && inRange(f.default, f)) return f.default;
+  const frac = (f.step.split(".")[1] ?? "").length;
+  const zero = frac > 0 ? `0.${"0".repeat(frac)}` : "0";
+  return inRange(zero, f) ? zero : f.min;
 }
 
 function describeError(err: Error | null): {
@@ -63,7 +80,7 @@ export default function CloudDashboard({ resurrect, cobolCode, onStdout, onInput
       return;
     }
     const init: Record<string, MoneyString> = {};
-    for (const f of meta.inputs) init[f.name] = f.min;
+    for (const f of meta.inputs) init[f.name] = initialValue(f);
     setInputs(init);
   }, [meta]);
 
@@ -124,7 +141,7 @@ export default function CloudDashboard({ resurrect, cobolCode, onStdout, onInput
               <FieldSliderInput
                 key={f.name}
                 field={f}
-                value={inputs?.[f.name] ?? f.min}
+                value={inputs?.[f.name] ?? initialValue(f)}
                 onChange={(v) => setInputs((prev) => ({ ...(prev ?? {}), [f.name]: v }))}
                 serverError={err.field === f.name ? err.message : null}
               />

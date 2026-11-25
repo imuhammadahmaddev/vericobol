@@ -172,6 +172,7 @@ export default function Page() {
             ioProtocol={data.io_protocol}
             initialCode={data.export_fastapi_code}
             programTitle={data.program_title}
+            certified={data.certified}
           />
         )}
 

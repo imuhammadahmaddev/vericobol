@@ -15,6 +15,8 @@ interface ExportTabProps {
   initialCode?: string;
   /** Used for the fallback download name. */
   programTitle?: string;
+  /** False when parity verification failed; shows a warning banner. */
+  certified?: boolean;
 }
 
 /** Extract the error code from an API error body, falling back to the HTTP status. */
@@ -44,6 +46,7 @@ export default function ExportTab({
   ioProtocol,
   initialCode,
   programTitle,
+  certified,
 }: ExportTabProps) {
   const [code, setCode] = useState<string | null>(initialCode ?? null);
   const [filename, setFilename] = useState<string>(fallbackFilename(programTitle));
@@ -119,6 +122,15 @@ export default function ExportTab({
 
   return (
     <div className="space-y-3 rounded-xl border border-slate-800 bg-[#0F172A] p-3" data-testid="export-tab">
+      {certified === false && (
+        <div
+          role="alert"
+          data-testid="export-not-certified"
+          className="rounded-lg border border-[#EF4444] bg-[#EF4444]/10 p-3 text-sm font-semibold text-[#EF4444]"
+        >
+          Not certified — fix parity mismatches before deploying this microservice
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"

@@ -401,6 +401,7 @@ def build_dashboard_metadata(program: InferredProgram) -> dict[str, Any]:
                 "min": f.get("min"),
                 "max": f.get("max"),
                 "step": f.get("step"),
+                **({"default": f["default"]} if f.get("default") is not None else {}),
             }
             for f in contract["inputs"]
         ],
