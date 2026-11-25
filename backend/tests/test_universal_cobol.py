@@ -312,3 +312,98 @@ def test_fixed_format_80_column_program_reaches_full_parity():
     _assert_full_parity(resp)
     assert llm.calls == {"infer": 1, "generate": 1, "repair": 0}
     assert [i["name"] for i in resp.contract["inputs"]] == ["amount", "rate_pct"]
+
+
+# ---------------------------------------------------------------------------
+# FX Wire calculator (batch_space) misclassified by the LLM as single_run_lines
+# ---------------------------------------------------------------------------
+FX_SOURCE = """\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. FX-WIRE.
+*> FX Wire calculator (batch_space). Row: amount rate_pct fee
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-LINE       PIC X(200).
+01 WS-TOK-AMT    PIC X(40).
+01 WS-TOK-RATE   PIC X(40).
+01 WS-TOK-FEE    PIC X(40).
+01 WS-EOF        PIC 9 VALUE 0.
+01 WS-AMT        PIC 9(7)V99.
+01 WS-RATE       PIC 9(3)V9999.
+01 WS-FEE        PIC 9(5)V99.
+01 WS-CONV       PIC 9(9)V99.
+01 WS-NET        PIC 9(9)V99.
+01 WS-OUT-CONV   PIC 9(9).99.
+01 WS-OUT-NET    PIC 9(9).99.
+PROCEDURE DIVISION.
+MAIN-PARA.
+    PERFORM UNTIL WS-EOF = 1
+        MOVE SPACES TO WS-LINE
+        ACCEPT WS-LINE
+            ON EXCEPTION
+                MOVE 1 TO WS-EOF
+            NOT ON EXCEPTION
+                PERFORM PROCESS-ROW
+        END-ACCEPT
+    END-PERFORM
+    STOP RUN.
+PROCESS-ROW.
+    MOVE SPACES TO WS-TOK-AMT WS-TOK-RATE WS-TOK-FEE
+    UNSTRING FUNCTION TRIM(WS-LINE) DELIMITED BY ALL SPACE
+        INTO WS-TOK-AMT WS-TOK-RATE WS-TOK-FEE
+    END-UNSTRING
+    IF WS-TOK-FEE = SPACES
+        EXIT PARAGRAPH
+    END-IF
+    COMPUTE WS-AMT = FUNCTION NUMVAL(WS-TOK-AMT)
+    COMPUTE WS-RATE = FUNCTION NUMVAL(WS-TOK-RATE)
+    COMPUTE WS-FEE = FUNCTION NUMVAL(WS-TOK-FEE)
+    COMPUTE WS-CONV ROUNDED = WS-AMT * WS-RATE
+    IF WS-CONV > WS-FEE
+        COMPUTE WS-NET = WS-CONV - WS-FEE
+    ELSE
+        MOVE 0 TO WS-NET
+    END-IF
+    MOVE WS-CONV TO WS-OUT-CONV
+    MOVE WS-NET TO WS-OUT-NET
+    DISPLAY WS-OUT-CONV " " WS-OUT-NET.
+"""
+FX_PYTHON = """
+def calculate(**kw):
+    amount = Decimal(kw["amount"])
+    rate = Decimal(kw["rate"])
+    fee = Decimal(kw["fee"])
+    conv = (amount * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    net = conv - fee if conv > fee else Decimal("0.00")
+    return {"converted": conv, "net_payout": net}
+"""
+FX_MISCLASSIFIED = InferredProgram(
+    program_title="FX Wire Calculator",
+    description="Converts a wire amount and deducts a fee.",
+    io_protocol="single_run_lines",  # deliberately wrong: the program is batch_space
+    contract={
+        "inputs": [
+            _input("amount", "9(7)V99", 2, "0.00", "100000.00"),
+            _input("rate", "9(3)V9999", 4, "0.0000", "50.0000"),
+            _input("fee", "9(5)V99", 2, "0.00", "500.00"),
+        ],
+        "outputs": [
+            _output("converted", "9(9)V99", 2, "ROUND_HALF_UP"),
+            _output("net_payout", "9(9)V99", 2, "ROUND_DOWN"),
+        ],
+    },
+    business_rules=["Converted amount is amount times rate, rounded half up."],
+    dashboard_metadata={"title": "FX Wire", "chart_type": "summary", "inputs": [], "outputs": []},
+)
+
+
+@needs_runtime
+def test_misclassified_batch_space_is_auto_corrected_by_probe():
+    llm = ScriptedLLM(FX_MISCLASSIFIED, generated=FX_PYTHON)
+    resp = Pipeline(llm, PipelineCache(), runner=CobolRunner()).run(FX_SOURCE)
+    assert resp.io_protocol == "batch_space"
+    assert resp.certified
+    report = resp.final_report.report
+    assert report.total_cases == 150
+    assert report.passed_cases == 150
+    assert report.parity_score_pct == "100.00"

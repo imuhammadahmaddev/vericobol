@@ -312,7 +312,15 @@ _INFER_PROMPT = (
     '"flag" | "text"}]}, "business_rules": [plain-English str], '
     '"dashboard_metadata": {"title": str, "chart_type": "bar_comparison" | '
     '"breakdown" | "waterfall" | "summary", "inputs": [..], "outputs": [..]}}. '
-    "Use no_input_static only when the program reads no input. "
+    "io_protocol rules (decide from the source): "
+    '"no_input_static" = the program contains ZERO ACCEPT statements. '
+    '"batch_space" = a PERFORM UNTIL loop reads ACCEPT lines until end of input '
+    "and splits MULTIPLE inputs from ONE space-separated line (for example "
+    "UNSTRING ... DELIMITED BY ALL SPACE INTO ...), one output line per input line. "
+    '"single_run_space" = ONE ACCEPT with no end-of-input loop, then UNSTRING splits '
+    "multiple inputs from that ONE space-separated line. "
+    '"single_run_lines" = MULTIPLE separate ACCEPT statements, one per input variable '
+    "on separate lines, and NO UNSTRING. "
     "For every input choose a realistic, non-overflowing operational min and max "
     "that sit safely inside the field's PIC capacity so intermediate COBOL sums "
     "and products never silently wrap around (for PIC S9(9)V99 balances use "

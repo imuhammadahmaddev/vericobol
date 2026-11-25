@@ -25,6 +25,7 @@ from .pbt_verifier import (
     ParityReport,
     VerificationError,
     _shared_runner,
+    probe_io_protocol,
     run_universal_verification,
 )
 from .pipeline_cache import CachedResult, PipelineCache, cache_key
@@ -599,6 +600,14 @@ def _check_contract(program: InferredProgram) -> None:
         )
 
 
+def _with_probed_protocol(program: InferredProgram, cobol_code: str, runner: CobolRunner) -> InferredProgram:
+    """Replace the LLM's io_protocol with the one the compiled binary answers to."""
+    proto = probe_io_protocol(cobol_code, program.contract, program.io_protocol, runner=runner)
+    if proto == program.io_protocol:
+        return program
+    return dataclasses.replace(program, io_protocol=proto)
+
+
 class Pipeline:
     """Legacy_Parser -> Cloud_Architect -> Parity_Auditor orchestration."""
 
@@ -647,6 +656,7 @@ class Pipeline:
         try:
             if cached is not None and "program" in cached.extra:
                 program = _program_from_dict(cached.extra["program"])
+                program = _with_probed_protocol(program, cobol_code, runner)
                 first_code = cached.verified_python_code
                 float_code = cached.extra.get("float_demo_code")
                 stages += [
@@ -661,6 +671,7 @@ class Pipeline:
                 program = self._llm.infer_contract(cobol_code)
                 _check_contract(program)
                 program = dataclasses.replace(program, contract=normalize_contract(program.contract))
+                program = _with_probed_protocol(program, cobol_code, runner)
                 stages.append(StageRecord("legacy_parser", "ok", _ms(t0), "llm"))
                 t0 = time.perf_counter()
                 architect = self._llm.generate_python(

@@ -1197,6 +1197,70 @@ def parse_outputs(stdout: str, n_outputs: int, io_protocol: str) -> list[str] | 
     return None
 
 
+def _probe_case(contract: dict[str, Any], fields: list[_Field]) -> Case:
+    """One valid sample Case: the field default when given, else the mid-range value."""
+    defaults = {str(f["name"]): f.get("default") for f in contract.get("inputs", [])}
+    units: dict[str, int] = {}
+    for f in fields:
+        value = (f.lo + f.hi) // 2
+        raw = defaults.get(f.name)
+        if raw not in (None, ""):
+            try:
+                value = min(max(_units(str(raw), f.scale), f.lo), f.hi)
+            except (InvalidOperation, ValueError):
+                pass
+        units[f.name] = value
+    return _build(_CUSTOM_ID, fields, units)
+
+
+def _probe_one(runner: CobolRunner, binary: Path, case: Case, fields: list[_Field],
+               n_outputs: int, proto: str) -> bool:
+    """True when ``proto`` makes the binary print exactly ``n_outputs`` parseable values."""
+    try:
+        if proto == "batch_space":
+            row = render_stdin(case, fields, proto)
+            run = runner.run_batch(binary, [row, row])
+            lines = [ln for ln in run.stdout.splitlines() if ln.strip()]
+            return (not run.timed_out and len(lines) == 2
+                    and all(parse_outputs(ln, n_outputs, proto) is not None for ln in lines))
+        run = runner.run_single(binary, render_stdin(case, fields, proto))
+        return not run.timed_out and parse_outputs(run.stdout, n_outputs, proto) is not None
+    except Exception:  # a probe must never break the pipeline
+        return False
+
+
+def probe_io_protocol(cobol_source: str, contract: dict[str, Any], guessed_protocol: str,
+                      runner: CobolRunner | None = None) -> str:
+    """Return the input protocol the compiled binary actually answers to.
+
+    Runs one valid sample against the cached binary under ``guessed_protocol``
+    first, then the other input protocols (``UNSTRING`` sources try
+    batch_space, single_run_space, single_run_lines; others the reverse). A
+    guessed ``single_run_lines`` is tried last for ``UNSTRING`` sources, since
+    that protocol means "no UNSTRING". Falls back to ``guessed_protocol``.
+    """
+    if not contract.get("inputs"):
+        return "no_input_static"
+    runner = runner or _shared_runner()
+    compiled = runner.get_binary(cobol_source)
+    if not compiled.success or compiled.binary_path is None:
+        return guessed_protocol
+    fields = _contract_fields(contract)
+    n_outputs = len(contract.get("outputs", []))
+    case = _probe_case(contract, fields)
+    unstring = "UNSTRING" in cobol_source.upper()
+    smart = (("batch_space", "single_run_space", "single_run_lines") if unstring
+             else ("single_run_lines", "single_run_space", "batch_space"))
+    order: list[str] = []
+    if guessed_protocol in smart and not (unstring and guessed_protocol == "single_run_lines"):
+        order.append(guessed_protocol)
+    order += [p for p in smart if p not in order]
+    for proto in order:
+        if _probe_one(runner, compiled.binary_path, case, fields, n_outputs, proto):
+            return proto
+    return guessed_protocol
+
+
 def _run_cobol_cases(runner: CobolRunner, binary: Path, cases: list[Case],
                      fields: list[_Field], n_outputs: int, io_protocol: str
                      ) -> list[list[str] | None]:
