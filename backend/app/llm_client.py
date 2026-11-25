@@ -1,9 +1,11 @@
-"""OpenAI-compatible LLM client with a process-wide $2.00 budget cap.
+"""OpenAI-compatible LLM client with a process-wide USD budget cap.
 
-Configuration comes only from ``LLM_BASE_URL``, ``LLM_API_KEY`` and ``LLM_MODEL``.
-Every network call goes through :meth:`LLMClient._call`, which normalizes every
-failure to :class:`LLMCallError` without leaking the key or the raw provider
-payload. All money values are ``Decimal``.
+Configuration for the endpoint comes only from ``LLM_BASE_URL``, ``LLM_API_KEY``
+and ``LLM_MODEL``. The spend cap defaults to $2.00 and may be overridden with
+``LLM_BUDGET_USD``. Every network call goes through :meth:`LLMClient._call`.
+All error messages are built from fixed strings, so neither the key nor a raw
+provider payload can reach a log, a response or an exception text. All money
+values are ``Decimal``.
 """
 
 from __future__ import annotations
@@ -11,31 +13,39 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 import threading
-from dataclasses import dataclass
-from decimal import Decimal
+from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:  # pragma: no cover - resurrection.py imports this module
-    from .resurrection import ArchitectOutput, ContractSchema, ParsedRules
+    from .resurrection import ArchitectOutput
 
 TIMEOUT_SECONDS = 30
 MAX_RESPONSE_BYTES = 64 * 1024
-BUDGET_CAP_USD = Decimal("2.00")
+DEFAULT_BUDGET_USD = Decimal("2.00")
+BUDGET_CAP_USD = DEFAULT_BUDGET_USD  # default cap; see budget_cap_from_env()
 
 # Budget-model pricing (USD per token), used for cost accounting only.
-_PRICE_IN = Decimal("0.05") / Decimal(1_000_000)
-_PRICE_OUT = Decimal("0.40") / Decimal(1_000_000)
+_PRICE_IN = Decimal("0.10") / Decimal(1_000_000)
+_PRICE_OUT = Decimal("0.50") / Decimal(1_000_000)
 _ESTIMATED_OUTPUT_TOKENS = 16_384
 
 _ENV_EXAMPLE = Path(__file__).resolve().parents[2] / ".env.example"
 # Used only when .env.example is not shipped (e.g. inside the Docker image).
 _FALLBACK_PLACEHOLDERS = frozenset({"your_api_key_here", "changeme", "your-api-key"})
 
+IO_PROTOCOLS = frozenset(
+    {"batch_space", "single_run_lines", "single_run_space", "no_input_static"}
+)
+OUTPUT_FORMATS = frozenset({"currency", "percent", "integer", "decimal", "flag", "text"})
+CHART_TYPES = frozenset({"bar_comparison", "breakdown", "waterfall", "summary"})
+
 
 def _load_placeholder_keys() -> frozenset[str]:
-    """Read placeholder API key values from ``.env.example`` once."""
+    """Read placeholder API key values from ``.env.example`` once (never ``.env``)."""
     found: set[str] = set()
     try:
         for line in _ENV_EXAMPLE.read_text(encoding="utf-8").splitlines():
@@ -50,6 +60,20 @@ def _load_placeholder_keys() -> frozenset[str]:
 _PLACEHOLDER_KEYS = _load_placeholder_keys()
 
 
+def budget_cap_from_env() -> Decimal:
+    """Return ``LLM_BUDGET_USD`` as Decimal; fall back to $2.00 if unset or invalid."""
+    raw = (os.environ.get("LLM_BUDGET_USD") or "").strip()
+    if not raw:
+        return DEFAULT_BUDGET_USD
+    try:
+        value = Decimal(raw)
+    except (InvalidOperation, ValueError):
+        return DEFAULT_BUDGET_USD
+    if not value.is_finite() or value < 0:
+        return DEFAULT_BUDGET_USD
+    return value
+
+
 @dataclass(frozen=True)
 class LLMConfig:
     base_url: str
@@ -57,12 +81,39 @@ class LLMConfig:
     model: str
 
 
-class LLMKeyMissing(Exception):
+UnavailableCause = Literal["missing_key", "provider_failure", "budget_exhausted"]
+
+_UNAVAILABLE_MESSAGES: dict[str, str] = {
+    "missing_key": "LLM_API_KEY is not configured",
+    "provider_failure": "LLM provider request failed or timed out",
+    "budget_exhausted": "LLM budget exhausted",
+}
+
+
+class LLMUnavailable(Exception):
+    """The LLM cannot be used. ``cause`` is one of the three fixed values."""
+
+    def __init__(self, cause: UnavailableCause):
+        super().__init__(_UNAVAILABLE_MESSAGES[cause])
+        self.cause: UnavailableCause = cause
+
+
+class LLMKeyMissing(LLMUnavailable):
     """LLM_API_KEY is unset, empty, or a known .env.example placeholder."""
+
+    def __init__(self, *_: object):
+        super().__init__("missing_key")
+
+
+class BudgetExceeded(LLMUnavailable):
+    """Cumulative LLM cost would reach the cap."""
+
+    def __init__(self, *_: object):
+        super().__init__("budget_exhausted")
 
 
 class LLMCallError(Exception):
-    """Timeout or unparseable response. Never contains the key or raw payload."""
+    """Unparseable or schema-violating response. Never contains the key or payload."""
 
     def __init__(self, stage: str, message: str):
         super().__init__(f"{stage}: {message}")
@@ -70,13 +121,9 @@ class LLMCallError(Exception):
         self.message = message
 
 
-class BudgetExceeded(Exception):
-    """Cumulative LLM cost would reach the $2.00 cap."""
-
-
 class BudgetTracker:
-    def __init__(self, cap: Decimal = BUDGET_CAP_USD):
-        self.cap = cap
+    def __init__(self, cap: Decimal | None = None):
+        self.cap = Decimal(cap) if cap is not None else budget_cap_from_env()
         self.cumulative_cost_usd = Decimal("0")
         self._lock = threading.Lock()
 
@@ -96,6 +143,147 @@ def get_budget_tracker() -> BudgetTracker:
     return _BUDGET
 
 
+# ------------------------------------------------------------------ parsing
+_FENCE_OPEN = re.compile(r"^\s*```[A-Za-z0-9_-]*[ \t]*\r?\n?")
+_FENCE_CLOSE = re.compile(r"\r?\n?[ \t]*```\s*$")
+
+
+def _extract_json(text: str) -> Any:
+    """Strip a leading ```json / ``` fence and a trailing fence, then parse.
+
+    Floats become ``Decimal`` so no binary float ever holds a monetary value.
+    Raises ``ValueError`` (or ``RecursionError``) on invalid JSON.
+    """
+    body = text.strip()
+    if body.startswith("```"):
+        body = _FENCE_OPEN.sub("", body, count=1)
+        body = _FENCE_CLOSE.sub("", body, count=1)
+    return json.loads(body.strip(), parse_float=Decimal)
+
+
+# ------------------------------------------------------------ inferred model
+@dataclass(frozen=True)
+class InferredProgram:
+    program_title: str
+    description: str
+    io_protocol: str
+    contract: dict[str, list[dict[str, Any]]]
+    business_rules: list[str]
+    dashboard_metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class _SchemaError(ValueError):
+    """Internal: schema violation. The text is fed back to the LLM on retry."""
+
+
+def _req_str(d: dict[str, Any], key: str, where: str) -> str:
+    v = d.get(key)
+    if not isinstance(v, str) or not v.strip():
+        raise _SchemaError(f"{where}.{key} must be a non-empty string")
+    return v
+
+
+def _opt_decimal(d: dict[str, Any], key: str, where: str) -> str | None:
+    """Return a Decimal-normalized string (kept as str for JSON safety) or None."""
+    v = d.get(key)
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        raise _SchemaError(f"{where}.{key} must be a number")
+    try:
+        dec = Decimal(str(v))
+    except (InvalidOperation, ValueError):
+        raise _SchemaError(f"{where}.{key} must be a number") from None
+    if not dec.is_finite():
+        raise _SchemaError(f"{where}.{key} must be a finite number")
+    return format(dec, "f")
+
+
+def _scale(d: dict[str, Any], where: str) -> int:
+    v = d.get("scale")
+    if isinstance(v, bool) or not isinstance(v, (int, Decimal, str)):
+        raise _SchemaError(f"{where}.scale must be an integer")
+    try:
+        dec = Decimal(str(v))
+    except (InvalidOperation, ValueError):
+        raise _SchemaError(f"{where}.scale must be an integer") from None
+    if not dec.is_finite() or dec != dec.to_integral_value() or not 0 <= dec <= 18:
+        raise _SchemaError(f"{where}.scale must be an integer between 0 and 18")
+    return int(dec)
+
+
+def parse_inferred_program(data: Any) -> InferredProgram:
+    """Validate an LLM reply against the InferredProgram schema (Req 5.2 to 5.7)."""
+    if not isinstance(data, dict):
+        raise _SchemaError("reply must be a JSON object")
+    protocol = _req_str(data, "io_protocol", "reply")
+    if protocol not in IO_PROTOCOLS:
+        raise _SchemaError(f"io_protocol must be one of {sorted(IO_PROTOCOLS)}")
+    contract = data.get("contract")
+    if not isinstance(contract, dict):
+        raise _SchemaError("contract must be an object with inputs and outputs")
+    raw_in, raw_out = contract.get("inputs"), contract.get("outputs")
+    if not isinstance(raw_in, list) or not isinstance(raw_out, list):
+        raise _SchemaError("contract.inputs and contract.outputs must be lists")
+
+    inputs: list[dict[str, Any]] = []
+    for i, f in enumerate(raw_in):
+        where = f"contract.inputs[{i}]"
+        if not isinstance(f, dict):
+            raise _SchemaError(f"{where} must be an object")
+        inputs.append(
+            {
+                "name": _req_str(f, "name", where),
+                "label": _req_str(f, "label", where),
+                "pic": _req_str(f, "pic", where),
+                "scale": _scale(f, where),
+                "min": _opt_decimal(f, "min", where),
+                "max": _opt_decimal(f, "max", where),
+                "step": _opt_decimal(f, "step", where),
+            }
+        )
+    outputs: list[dict[str, Any]] = []
+    for i, f in enumerate(raw_out):
+        where = f"contract.outputs[{i}]"
+        if not isinstance(f, dict):
+            raise _SchemaError(f"{where} must be an object")
+        fmt = _req_str(f, "format", where)
+        if fmt not in OUTPUT_FORMATS:
+            raise _SchemaError(f"{where}.format must be one of {sorted(OUTPUT_FORMATS)}")
+        outputs.append(
+            {
+                "name": _req_str(f, "name", where),
+                "label": _req_str(f, "label", where),
+                "pic": _req_str(f, "pic", where),
+                "scale": _scale(f, where),
+                "rounding": _req_str(f, "rounding", where),
+                "format": fmt,
+            }
+        )
+
+    rules = data.get("business_rules")
+    if not isinstance(rules, list) or not all(isinstance(r, str) for r in rules):
+        raise _SchemaError("business_rules must be a list of strings")
+    meta = data.get("dashboard_metadata")
+    if not isinstance(meta, dict):
+        raise _SchemaError("dashboard_metadata must be an object")
+    if meta.get("chart_type") not in CHART_TYPES:
+        raise _SchemaError(f"dashboard_metadata.chart_type must be one of {sorted(CHART_TYPES)}")
+    if not isinstance(meta.get("title"), str) or not meta["title"].strip():
+        raise _SchemaError("dashboard_metadata.title must be a non-empty string")
+    if not isinstance(meta.get("inputs"), list) or not isinstance(meta.get("outputs"), list):
+        raise _SchemaError("dashboard_metadata.inputs and .outputs must be lists")
+
+    return InferredProgram(
+        program_title=_req_str(data, "program_title", "reply"),
+        description=_req_str(data, "description", "reply"),
+        io_protocol=protocol,
+        contract={"inputs": inputs, "outputs": outputs},
+        business_rules=list(rules),
+        dashboard_metadata=meta,
+    )
+
+
 def _to_jsonable(obj: Any) -> Any:
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         return dataclasses.asdict(obj)
@@ -111,6 +299,20 @@ _SYSTEM = (
     "JSON object only. Never use floats for money; use decimal.Decimal."
 )
 
+_INFER_PROMPT = (
+    "Analyze this COBOL program and infer its contract. Return one JSON object: "
+    '{"program_title": str, "description": str, "io_protocol": one of '
+    '"batch_space" | "single_run_lines" | "single_run_space" | "no_input_static", '
+    '"contract": {"inputs": [{"name": str, "label": str, "pic": str, "scale": int, '
+    '"min": number, "max": number, "step": number}], "outputs": [{"name": str, '
+    '"label": str, "pic": str, "scale": int, "rounding": "ROUND_DOWN" | '
+    '"ROUND_HALF_UP", "format": "currency" | "percent" | "integer" | "decimal" | '
+    '"flag" | "text"}]}, "business_rules": [plain-English str], '
+    '"dashboard_metadata": {"title": str, "chart_type": "bar_comparison" | '
+    '"breakdown" | "waterfall" | "summary", "inputs": [..], "outputs": [..]}}. '
+    "Use no_input_static only when the program reads no input."
+)
+
 
 class LLMClient:
     def __init__(self, config: LLMConfig | None, budget_tracker: BudgetTracker):
@@ -118,8 +320,8 @@ class LLMClient:
         self.budget_tracker = budget_tracker
 
     @classmethod
-    def from_env(cls, budget_tracker: BudgetTracker | None = None) -> "LLMClient":
-        tracker = budget_tracker if budget_tracker is not None else _BUDGET
+    def from_env(cls, tracker: BudgetTracker | None = None) -> "LLMClient":
+        tracker = tracker if tracker is not None else _BUDGET
         key = (os.environ.get("LLM_API_KEY") or "").strip()
         base_url = (os.environ.get("LLM_BASE_URL") or "").strip()
         model = (os.environ.get("LLM_MODEL") or "").strip()
@@ -129,59 +331,75 @@ class LLMClient:
 
     def require_key(self) -> None:
         if self.config is None:
-            raise LLMKeyMissing("LLM_API_KEY is not configured")
+            raise LLMUnavailable("missing_key")
 
     # ------------------------------------------------------------------ stages
-    def extract_rules(self, cobol_source: str) -> "ParsedRules":
-        from .resurrection import ParsedRules
-
+    def infer_contract(
+        self, cobol_source: str, validation_error: str | None = None
+    ) -> InferredProgram:
+        """Stage 1. One retry carrying the validation error, then ``LLMCallError``."""
         stage = "legacy_parser"
-        prompt = (
-            "Extract plain-English business rules and PIC mappings from this COBOL "
-            'program. Return JSON: {"business_rules": [str], "pic_mappings": '
-            '[{"name": str, "pic": str, "scale": str, "rounding": str}]}.\n\n'
-            f"COBOL:\n{cobol_source}"
-        )
-        data = self._call(stage, prompt)
-        try:
-            rules = data["business_rules"]
-            maps = data["pic_mappings"]
-            if not isinstance(rules, list) or not isinstance(maps, list):
-                raise TypeError
-            return ParsedRules(
-                business_rules=[str(r) for r in rules],
-                pic_mappings=[{str(k): str(v) for k, v in m.items()} for m in maps],
-            )
-        except (KeyError, TypeError, AttributeError):
-            raise LLMCallError(stage, "response did not match the expected schema") from None
+        error = validation_error
+        for attempt in (1, 2):
+            prompt = _INFER_PROMPT
+            if error:
+                prompt += (
+                    "\n\nYour previous reply was rejected for this reason; fix it: "
+                    f"{error[:500]}"
+                )
+            prompt += f"\n\nCOBOL:\n{cobol_source}"
+            try:
+                return parse_inferred_program(self._call(stage, prompt))
+            except _SchemaError as exc:
+                error = str(exc)
+            except LLMCallError as exc:
+                error = exc.message
+            if attempt == 2:
+                raise LLMCallError(stage, f"response did not match the schema: {error}")
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def generate_python(
-        self, cobol_source: str, rules: "ParsedRules", schema: "ContractSchema"
+        self, cobol_source: str, program: InferredProgram, *, float_demo: bool = False
     ) -> "ArchitectOutput":
+        if float_demo:
+            style = (
+                "DEMONSTRATION: write a deliberately naive translation that uses "
+                "Python float arithmetic and no rounding control. "
+            )
+        else:
+            style = (
+                "Use decimal.Decimal with an explicit decimal.Context matching the "
+                "PIC scale and capacity. Stores without ROUNDED use ROUND_DOWN; "
+                "stores with ROUNDED use ROUND_HALF_UP. No floats, float literals, "
+                "math.pow or float-operand `**`. Only import decimal. "
+            )
         prompt = (
-            "Write a Python 3.12 function `calculate(**kwargs)` using decimal.Decimal "
-            "with explicit quantization and an explicit decimal.Context (truncation = "
-            "ROUND_DOWN, COBOL ROUNDED = ROUND_HALF_UP). No floats, no imports other "
-            "than decimal. Also produce dashboard metadata. Return JSON: "
-            '{"verified_python_code": str, "dashboard_metadata": object}.\n\n'
-            f"Contract: {_dumps(schema)}\nRules: {_dumps(rules)}\n\nCOBOL:\n{cobol_source}"
+            "Write standalone Python 3.12 source defining `def calculate(**inputs) "
+            "-> dict` that reproduces this COBOL program exactly. "
+            + style
+            + 'Return JSON: {"verified_python_code": str, "dashboard_metadata": object}.\n\n'
+            f"Contract: {_dumps(program.contract)}\n"
+            f"Protocol: {program.io_protocol}\n"
+            f"Rules: {_dumps(program.business_rules)}\n\nCOBOL:\n{cobol_source}"
         )
         return self._architect("cloud_architect", prompt)
 
     def repair_python(
         self,
         cobol_source: str,
-        rules: "ParsedRules",
-        schema: "ContractSchema",
+        program: InferredProgram,
         counterexample: Any,
         previous_code: str,
     ) -> "ArchitectOutput":
         prompt = (
             "The Python below disagrees with the real COBOL on the counterexample. "
-            "Fix it (same rules as before). Return JSON: "
-            '{"verified_python_code": str, "dashboard_metadata": object}.\n\n'
+            "Fix it with Decimal arithmetic only (ROUND_DOWN without ROUNDED, "
+            "ROUND_HALF_UP with ROUNDED, explicit decimal.Context, no floats). "
+            'Return JSON: {"verified_python_code": str, "dashboard_metadata": object}.\n\n'
             f"Counterexample: {_dumps(counterexample)}\n"
-            f"Contract: {_dumps(schema)}\nRules: {_dumps(rules)}\n\n"
+            f"Contract: {_dumps(program.contract)}\n"
+            f"Protocol: {program.io_protocol}\n"
+            f"Rules: {_dumps(program.business_rules)}\n\n"
             f"Previous code:\n{previous_code}\n\nCOBOL:\n{cobol_source}"
         )
         return self._architect("parity_auditor", prompt)
@@ -206,7 +424,7 @@ class LLMClient:
             + Decimal(_ESTIMATED_OUTPUT_TOKENS) * _PRICE_OUT
         )
         if not self.budget_tracker.can_spend(estimate):
-            raise BudgetExceeded("LLM budget exhausted")
+            raise LLMUnavailable("budget_exhausted")
 
         try:
             from openai import OpenAI
@@ -226,7 +444,7 @@ class LLMClient:
                 response_format={"type": "json_object"},
             )
         except Exception:  # noqa: BLE001 - normalized; raw error may hold secrets
-            raise LLMCallError(stage, "LLM request failed or timed out") from None
+            raise LLMUnavailable("provider_failure") from None
 
         try:
             usage = getattr(resp, "usage", None)
@@ -242,6 +460,6 @@ class LLMClient:
         if not isinstance(text, str) or len(text.encode("utf-8")) > MAX_RESPONSE_BYTES:
             raise LLMCallError(stage, "LLM response was empty or exceeded the size cap")
         try:
-            return json.loads(text, parse_float=Decimal)
+            return _extract_json(text)
         except (ValueError, RecursionError):
             raise LLMCallError(stage, "LLM response was not valid JSON") from None

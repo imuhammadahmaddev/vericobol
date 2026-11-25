@@ -5,56 +5,22 @@ import { useCalculate } from "@/hooks/useCalculate";
 import { formatMoneyString } from "@/lib/money";
 import {
   ApiError,
-  type CalculateResponse,
   type MoneyString,
-  type PresetSummary,
   type PydanticFieldError,
   type ResurrectResponse,
 } from "@/lib/types";
-import VerifiedPythonTab from "../VerifiedPythonTab";
-import { CompoundChart } from "./charts/CompoundChart";
-import { LedgerChart } from "./charts/LedgerChart";
-import { LoanChart } from "./charts/LoanChart";
-import ExportTab from "./ExportTab";
+import DynamicChart, { isFlagTruthy } from "./DynamicChart";
 import FieldSliderInput from "./FieldSliderInput";
 
 export interface CloudDashboardProps {
-  preset: PresetSummary | null;
-  /** Latest resurrect result; feeds the Verified Python tab. */
+  /** Latest resurrect result. Everything on screen is driven by its `dashboard_metadata`. */
   resurrect: ResurrectResponse | null;
-  /** Fired whenever a fresh calculate response arrives (for the left STDOUT pane). */
-  onCalculated?: (result: CalculateResponse, rawCobolOutput: string) => void;
-  /** Fired whenever the input values change (including the initial sample). */
+  /** The COBOL source that produced `resurrect`. */
+  cobolCode: string;
+  /** Fired with raw GnuCOBOL stdout after each calculate call (Live 3270 STDOUT). */
+  onStdout?: (stdout: string) => void;
+  /** Fired whenever the input values change. */
   onInputsChange?: (inputs: Record<string, MoneyString>) => void;
-}
-
-type TabId = "dashboard" | "python" | "export";
-
-const TABS: { id: TabId; label: string }[] = [
-  { id: "dashboard", label: "Interactive Financial Dashboard" },
-  { id: "python", label: "Verified Python Code" },
-  { id: "export", label: "Export FastAPI Microservice" },
-];
-
-const KPIS: Record<string, { key: string; label: string }[]> = {
-  loan_calc: [
-    { key: "monthly_payment", label: "Monthly Payment" },
-    { key: "total_interest", label: "Total Interest" },
-    { key: "total_payable", label: "Total Payable" },
-  ],
-  compound_int: [
-    { key: "maturity_amount", label: "Maturity Amount" },
-    { key: "accrued_interest", label: "Accrued Interest" },
-  ],
-  daily_ledger: [
-    { key: "closing_balance", label: "Closing Balance" },
-    { key: "fee_applied", label: "Fee Applied" },
-    { key: "overdraft_flag", label: "Overdraft Flag" },
-  ],
-};
-
-function isPydanticArray(d: unknown): d is PydanticFieldError[] {
-  return Array.isArray(d);
 }
 
 function describeError(err: Error | null): {
@@ -66,8 +32,12 @@ function describeError(err: Error | null): {
   if (!(err instanceof ApiError)) return { field: null, message: err.message, list: [] };
   const d = err.detail;
   if (typeof d === "string") return { field: null, message: d, list: [] };
-  if (isPydanticArray(d)) {
-    return { field: null, message: null, list: d.map((e) => `${e.loc.join(".")}: ${e.msg}`) };
+  if (Array.isArray(d)) {
+    return {
+      field: null,
+      message: null,
+      list: (d as PydanticFieldError[]).map((e) => `${e.loc.join(".")}: ${e.msg}`),
+    };
   }
   const obj = d as { field?: string; message?: string; error?: string };
   return {
@@ -77,156 +47,142 @@ function describeError(err: Error | null): {
   };
 }
 
-function Results({ presetId, data, inputs }: { presetId: string; data: CalculateResponse; inputs: Record<string, MoneyString> }) {
-  const r = data.result;
-  const g = (k: string): MoneyString => r[k] ?? "0";
-  const i = (k: string): MoneyString => inputs[k] ?? "0";
-  if (presetId === "loan_calc") {
-    return (
-      <LoanChart principal={i("principal")} totalInterest={g("total_interest")} totalPayable={g("total_payable")} />
-    );
-  }
-  if (presetId === "compound_int") {
-    return (
-      <CompoundChart
-        principal={i("principal")}
-        accruedInterest={g("accrued_interest")}
-        maturityAmount={g("maturity_amount")}
-        annualRatePct={i("annual_rate_pct")}
-        compoundsPerYear={i("compounds_per_year")}
-        years={i("years")}
-      />
-    );
-  }
-  if (presetId === "daily_ledger") {
-    return (
-      <LedgerChart
-        openingBalance={i("opening_balance")}
-        deposits={i("deposits")}
-        withdrawals={i("withdrawals")}
-        feeApplied={g("fee_applied")}
-        closingBalance={g("closing_balance")}
-        overdraftFlag={g("overdraft_flag")}
-      />
-    );
-  }
-  return null;
-}
+export default function CloudDashboard({ resurrect, cobolCode, onStdout, onInputsChange }: CloudDashboardProps) {
+  const [inputs, setInputs] = useState<Record<string, MoneyString> | null>(null);
+  const { trigger, loading, data, error, parityVerified } = useCalculate({ onStdout });
 
-export default function CloudDashboard({ preset, resurrect, onCalculated, onInputsChange }: CloudDashboardProps) {
-  const [tab, setTab] = useState<TabId>("dashboard");
-  const [inputs, setInputs] = useState<Record<string, MoneyString>>({});
-  const { trigger, loading, data, error } = useCalculate();
+  const meta = resurrect?.dashboard_metadata ?? null;
+  const contract = resurrect?.contract ?? null;
+  const ioProtocol = resurrect?.io_protocol ?? null;
+  const code = resurrect?.verified_python_code ?? null;
 
-  const presetId = preset?.preset_id ?? null;
-
-  // Reset inputs to the preset's sample when the preset changes.
+  // Reset inputs to each field's minimum when a new program is resurrected.
   useEffect(() => {
-    if (preset) setInputs({ ...preset.sample_input });
-  }, [preset]);
+    if (!meta) {
+      setInputs(null);
+      return;
+    }
+    const init: Record<string, MoneyString> = {};
+    for (const f of meta.inputs) init[f.name] = f.min;
+    setInputs(init);
+  }, [meta]);
 
   useEffect(() => {
-    if (!presetId || Object.keys(inputs).length === 0) return;
+    if (!inputs || !contract || !ioProtocol || !code) return;
     onInputsChange?.(inputs);
-    trigger(presetId, inputs);
+    trigger({ cobol_code: cobolCode, python_code: code, schema: contract, io_protocol: ioProtocol }, inputs);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [presetId, inputs, trigger]);
-
-  useEffect(() => {
-    if (data) onCalculated?.(data, data.raw_cobol_output);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data]);
+  }, [inputs, contract, ioProtocol, code, cobolCode, trigger]);
 
   const err = useMemo(() => describeError(error), [error]);
-  const fresh = data && presetId && data.preset_id === presetId ? data : null;
+  const result = inputs && data ? data.result : null;
+
+  if (!resurrect || !meta) {
+    return (
+      <section
+        aria-label="Resurrected Cloud Dashboard"
+        className="rounded-2xl border border-slate-800 bg-[#0F172A] p-5 font-sans text-slate-100"
+      >
+        <h2 className="mb-2 text-lg font-semibold">2026 Resurrected Cloud Dashboard</h2>
+        <p className="text-sm text-slate-400">Resurrect a COBOL program to build its dashboard.</p>
+      </section>
+    );
+  }
+
+  const isStatic = meta.inputs.length === 0;
 
   return (
     <section
-      aria-label="2026 Resurrected Cloud Dashboard"
-      className="rounded-2xl border border-slate-200 bg-slate-50 p-5 font-sans text-slate-900"
+      aria-label="Resurrected Cloud Dashboard"
+      className="rounded-2xl border border-slate-800 bg-[#0F172A] p-5 font-sans text-slate-100"
     >
-      <h2 className="mb-4 text-lg font-semibold">2026 Resurrected Cloud Dashboard</h2>
-
-      <div role="tablist" className="mb-4 flex flex-wrap gap-2">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            role="tab"
-            type="button"
-            aria-selected={tab === t.id}
-            onClick={() => setTab(t.id)}
-            className={`rounded-lg px-3 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500 ${
-              tab === t.id ? "bg-emerald-600 text-white" : "bg-white text-slate-700 border border-slate-300"
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold">{resurrect.program_title ?? "2026 Resurrected Cloud Dashboard"}</h2>
+        {parityVerified !== null && (
+          <span
+            data-testid="parity-verified"
+            className={`rounded-full px-3 py-1 text-xs font-semibold ${
+              parityVerified ? "bg-emerald-500/20 text-emerald-300" : "bg-red-500/20 text-red-300"
             }`}
           >
-            {t.label}
-          </button>
-        ))}
+            {parityVerified ? "Parity verified" : "Parity mismatch"}
+          </span>
+        )}
       </div>
 
-      {!preset && <p className="text-sm text-slate-500">Select a preset to begin.</p>}
-
-      {preset && tab === "dashboard" && (
-        <div role="tabpanel" className="space-y-4">
+      <div className="space-y-4">
+        {isStatic ? (
+          <p
+            data-testid="static-notice"
+            className="rounded-lg border border-slate-700 bg-[#1E293B] p-3 text-sm text-slate-300"
+          >
+            Static Program — No Runtime Inputs
+          </p>
+        ) : (
           <div className="grid gap-3 sm:grid-cols-2">
-            {preset.input_schema.map((f) => (
+            {meta.inputs.map((f) => (
               <FieldSliderInput
-                key={`${preset.preset_id}-${f.name}`}
+                key={f.name}
                 field={f}
-                value={inputs[f.name] ?? preset.sample_input[f.name] ?? f.min}
-                onChange={(v) => setInputs((prev) => ({ ...prev, [f.name]: v }))}
+                value={inputs?.[f.name] ?? f.min}
+                onChange={(v) => setInputs((prev) => ({ ...(prev ?? {}), [f.name]: v }))}
                 serverError={err.field === f.name ? err.message : null}
               />
             ))}
           </div>
+        )}
 
-          {err.list.length > 0 && (
-            <ul role="alert" className="list-disc rounded-lg bg-red-50 p-3 pl-7 text-sm text-red-700">
-              {err.list.map((m, idx) => (
-                <li key={idx}>{m}</li>
-              ))}
-            </ul>
-          )}
-          {err.message && !err.field && (
-            <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
-              {err.message}
-            </p>
-          )}
+        {err.list.length > 0 && (
+          <ul role="alert" className="list-disc rounded-lg bg-red-500/10 p-3 pl-7 text-sm text-red-300">
+            {err.list.map((m, idx) => (
+              <li key={idx}>{m}</li>
+            ))}
+          </ul>
+        )}
+        {err.message && !err.field && (
+          <p role="alert" className="rounded-lg bg-red-500/10 p-3 text-sm text-red-300">
+            {err.message}
+          </p>
+        )}
 
-          <div className="grid gap-3 sm:grid-cols-3" aria-busy={loading}>
-            {(KPIS[preset.preset_id] ?? []).map((k) => (
-              <div key={k.key} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                <div className="text-xs uppercase tracking-wide text-slate-500">{k.label}</div>
-                <div data-kpi={k.key} className="mt-1 font-mono text-xl font-semibold text-slate-900">
-                  {fresh?.result[k.key] !== undefined
-                    ? k.key === "overdraft_flag"
-                      ? fresh.result[k.key]
-                      : formatMoneyString(fresh.result[k.key])
-                    : "…"}
+        <div className="grid gap-3 sm:grid-cols-3" aria-busy={loading}>
+          {meta.outputs.map((o) => {
+            const v = result?.[o.name];
+            return (
+              <div key={o.name} className="rounded-xl border border-slate-700 bg-[#1E293B] p-4">
+                <div className="text-xs uppercase tracking-wide text-slate-400">{o.label}</div>
+                <div data-kpi={o.name} className="mt-1 break-all font-mono text-xl font-semibold text-slate-100">
+                  {v === undefined
+                    ? "…"
+                    : o.format === "flag"
+                      ? isFlagTruthy(v)
+                        ? `SET (${v})`
+                        : `CLEAR (${v})`
+                      : o.format === "text"
+                        ? v
+                        : formatMoneyString(v)}
                 </div>
               </div>
-            ))}
-          </div>
-
-          {fresh && <Results presetId={preset.preset_id} data={fresh} inputs={inputs} />}
+            );
+          })}
         </div>
-      )}
 
-      {preset && tab === "python" && (
-        <div role="tabpanel">
-          {resurrect ? (
-            <VerifiedPythonTab result={resurrect} />
-          ) : (
-            <p className="text-sm text-slate-500">Run Resurrect to generate verified Python.</p>
-          )}
-        </div>
-      )}
+        {isStatic && data && (
+          <pre
+            data-testid="static-stdout"
+            className="overflow-x-auto rounded-lg border border-slate-700 bg-[#0A0E0C] p-3 font-mono text-xs text-[#00FF66]"
+          >
+            {data.raw_cobol_output}
+          </pre>
+        )}
 
-      {preset && tab === "export" && (
-        <div role="tabpanel">
-          <ExportTab presetId={preset.preset_id} />
-        </div>
-      )}
+        <DynamicChart
+          inputsMeta={meta.inputs}
+          outputsMeta={meta.outputs}
+          inputs={inputs ?? {}}
+          result={result}
+        />
+      </div>
     </section>
   );
 }

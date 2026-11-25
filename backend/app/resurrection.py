@@ -1,39 +1,40 @@
-"""Resurrection pipeline: data models and contract-derived metadata.
+"""Universal resurrection pipeline: Legacy_Parser -> Cloud_Architect -> Parity_Auditor.
 
-The input/output contract of a program comes only from the preset catalog or
-from the caller's ``field_schema``. Anything the LLM says about names, bounds or
-steps is discarded and rebuilt from the resolved ``ContractSchema``.
-
-Later tasks append ``SelfHealingLoop`` and ``Pipeline`` to this module.
+Every program, including the starter templates, goes through the live LLM
+stages (or a Certified Pipeline_Cache hit) and a live GnuCOBOL verification.
+Nothing here reads ``preset_bundles.json`` or imports ``reference_models``.
+The contract comes from ``LLMClient.infer_contract``; the names, bounds and
+steps shown on the dashboard are rebuilt from that contract.
 """
 
 from __future__ import annotations
 
 import ast
-import inspect
-import json
+import dataclasses
 import re
-import textwrap
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal
-from pathlib import Path
 from typing import Any, Callable, Iterable, Literal, Mapping
 
-from .catalog import PRESET_ORDER, load_presets
-from .cobol_runner import CobolRunner
+from .cobol_runner import CobolRunner, validate_source
 from .export_template import render
+from .llm_client import InferredProgram, LLMCallError, LLMUnavailable
+from .pbt_verifier import (
+    Counterexample,
+    ParityReport,
+    VerificationError,
+    _shared_runner,
+    run_universal_verification,
+)
 from .pipeline_cache import CachedResult, PipelineCache, cache_key
-from .pbt_verifier import Counterexample, ParityReport, VerificationError, run_verification
-
-PRESET_IDS: tuple[str, ...] = PRESET_ORDER
 
 ROUND_DOWN = "ROUND_DOWN"          # COBOL default: truncation
 ROUND_HALF_UP = "ROUND_HALF_UP"    # COBOL ROUNDED
 
 StageName = Literal["legacy_parser", "cloud_architect", "parity_auditor"]
 StageStatus = Literal["ok", "failed", "skipped"]
-StageSource = Literal["llm", "cache", "deterministic"]
+StageSource = Literal["llm", "cache", "live", "deterministic"]
 
 
 # ---------------------------------------------------------------------------
@@ -50,8 +51,27 @@ class PipelineStageError(Exception):
         self.body = body
 
 
+def _llm_unavailable_error(exc: LLMUnavailable, stage: str) -> PipelineStageError:
+    # str(exc) is a fixed message (never the key or a provider payload).
+    return PipelineStageError(
+        503,
+        stage,
+        {
+            "error": "llm_unavailable",
+            "cause": exc.cause,
+            "message": f"The LLM is unavailable: {exc}.",
+        },
+    )
+
+
+def _llm_call_error(exc: LLMCallError) -> PipelineStageError:
+    return PipelineStageError(
+        502, exc.stage, {"error": "llm_call_failed", "stage": exc.stage, "message": exc.message[:500]}
+    )
+
+
 # ---------------------------------------------------------------------------
-# Contract
+# Contract (typed view used by export_template.render)
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -106,7 +126,6 @@ def _to_decimal(value: Any, what: str) -> Decimal | None:
             return Decimal(value)
         except ArithmeticError:
             raise ValueError(f"{what} is not a valid decimal: {value!r}") from None
-    # Binary floats land here on purpose: money bounds are never floats.
     raise TypeError(f"{what} must be a string, integer or Decimal, not {type(value).__name__}")
 
 
@@ -125,11 +144,10 @@ def contract_from_field_schema(
 ) -> ContractSchema:
     """Build a ContractSchema from caller-supplied field descriptions.
 
-    Each item is a ``FieldContract`` or a mapping with ``name``, ``pic`` and
-    ``direction`` (required) and optional ``scale``, ``min``, ``max``, ``step``,
-    ``label``, ``rounding``. A missing ``scale`` comes from the PIC clause. Input
-    fields without bounds get the PIC capacity as min/max and one unit as step.
-    Binary floats are rejected.
+    Kept for the legacy ``field_schema`` request shape. Each item is a
+    ``FieldContract`` or a mapping with ``name``, ``pic`` and ``direction``
+    (required) and optional ``scale``, ``min``, ``max``, ``step``, ``label``,
+    ``rounding``. Binary floats are rejected.
     """
     inputs: list[FieldContract] = []
     outputs: list[FieldContract] = []
@@ -165,7 +183,7 @@ def contract_from_field_schema(
         scale = pic_scale if item.scale < 0 else item.scale
         lo, hi, step = item.min, item.max, item.step
         if item.direction == "input":
-            d_lo, d_hi, d_step = _pic_bounds(item.pic)
+            d_lo, d_hi, _ = _pic_bounds(item.pic)
             lo = d_lo if lo is None else lo
             hi = d_hi if hi is None else hi
             step = _unit(scale) if step is None else step
@@ -187,70 +205,62 @@ def contract_from_field_schema(
     return ContractSchema(tuple(inputs), tuple(outputs))
 
 
-# PIC clauses of the preset programs (the catalog stores bounds, not PICs).
-# Outputs also record how the COBOL program stores them (ROUNDED or truncation).
-_PRESET_INPUT_PICS: dict[str, dict[str, str]] = {
-    "loan_calc": {
-        "principal": "9(9)V99",
-        "annual_rate_pct": "9(3)V999",
-        "term_months": "9(3)",
-    },
-    "compound_int": {
-        "principal": "9(9)V99",
-        "annual_rate_pct": "9(3)V999",
-        "compounds_per_year": "9(2)",
-        "years": "9(2)",
-    },
-    "daily_ledger": {
-        "opening_balance": "S9(9)V99",
-        "deposits": "9(9)V99",
-        "withdrawals": "9(9)V99",
-        "overdraft_threshold": "S9(9)V99",
-        "overdraft_fee": "9(5)V99",
-    },
-}
-
-_PRESET_OUTPUTS: dict[str, tuple[tuple[str, str, str], ...]] = {
-    "loan_calc": (
-        ("monthly_payment", "9(9)V99", ROUND_HALF_UP),
-        ("total_interest", "9(9)V99", ROUND_HALF_UP),
-        ("total_payable", "9(9)V99", ROUND_HALF_UP),
-    ),
-    "compound_int": (
-        ("maturity_amount", "9(9)V99", ROUND_HALF_UP),
-        ("accrued_interest", "S9(9)V99", ROUND_HALF_UP),
-    ),
-    "daily_ledger": (
-        ("closing_balance", "S9(9)V99", ROUND_DOWN),
-        ("fee_applied", "9(5)V99", ROUND_DOWN),
-        ("overdraft_flag", "9(1)", ROUND_DOWN),
-    ),
-}
+def _norm_rounding(value: Any) -> str:
+    text = str(value or "").upper().replace("-", "_").replace(" ", "_")
+    return ROUND_HALF_UP if text in ("ROUND_HALF_UP", "ROUNDED", "HALF_UP") else ROUND_DOWN
 
 
-def contract_from_preset(preset_id: str) -> ContractSchema:
-    """Resolve a preset's contract from the static catalog."""
-    if preset_id not in PRESET_IDS:
-        raise ValueError(f"unknown preset_id {preset_id!r}; valid ids: {', '.join(PRESET_IDS)}")
-    entry = next(p for p in load_presets() if p["preset_id"] == preset_id)
-    pics = _PRESET_INPUT_PICS[preset_id]
-    fields: list[dict[str, Any]] = [
-        {
-            "name": f["name"],
-            "pic": pics[f["name"]],
-            "direction": "input",
-            "min": f["min"],
-            "max": f["max"],
-            "step": f["step"],
-            "label": f.get("label", ""),
-        }
-        for f in entry["input_schema"]
-    ]
-    fields += [
-        {"name": name, "pic": pic, "direction": "output", "rounding": rounding}
-        for name, pic, rounding in _PRESET_OUTPUTS[preset_id]
-    ]
-    return contract_from_field_schema(fields)
+def _fmt_dec(value: Decimal) -> str:
+    return format(value, "f")
+
+
+def normalize_contract(contract: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Copy of an inferred contract with every input bound filled in.
+
+    Missing ``min``/``max`` come from the PIC capacity and a missing ``step``
+    is one unit of the field scale. Output rounding is normalized to
+    ``ROUND_DOWN`` or ``ROUND_HALF_UP``. Values stay strings.
+    """
+    inputs: list[dict[str, Any]] = []
+    for f in contract.get("inputs", []):
+        item = dict(f)
+        scale = int(item["scale"])
+        try:
+            lo, hi, _ = _pic_bounds(str(item["pic"]))
+        except ValueError:
+            lo = hi = None
+        if item.get("min") is None and lo is not None:
+            item["min"] = _fmt_dec(lo.quantize(_unit(scale)) if scale >= 0 else lo)
+        if item.get("max") is None and hi is not None:
+            item["max"] = _fmt_dec(hi.quantize(_unit(scale)))
+        if item.get("step") is None:
+            item["step"] = _fmt_dec(_unit(scale))
+        inputs.append(item)
+    outputs = [{**dict(f), "rounding": _norm_rounding(f.get("rounding"))}
+               for f in contract.get("outputs", [])]
+    return {"inputs": inputs, "outputs": outputs}
+
+
+def schema_from_contract(contract: Mapping[str, Any]) -> ContractSchema:
+    """Typed ContractSchema from an inferred (normalized) contract."""
+
+    def build(f: Mapping[str, Any], direction: Literal["input", "output"]) -> FieldContract:
+        return FieldContract(
+            name=str(f["name"]),
+            pic=str(f["pic"]),
+            scale=int(f["scale"]),
+            direction=direction,
+            min=_to_decimal(f.get("min"), "min"),
+            max=_to_decimal(f.get("max"), "max"),
+            step=_to_decimal(f.get("step"), "step"),
+            label=str(f.get("label") or f["name"]),
+            rounding=_norm_rounding(f.get("rounding")),
+        )
+
+    return ContractSchema(
+        tuple(build(f, "input") for f in contract.get("inputs", [])),
+        tuple(build(f, "output") for f in contract.get("outputs", [])),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +325,11 @@ class FinalReport:
 
 @dataclass(frozen=True)
 class ResurrectResponse:
-    preset_id: str | None
+    cobol_code: str
+    program_title: str
+    description: str
+    io_protocol: str
+    contract: dict[str, list[dict[str, Any]]]
     cache_hit: bool
     llm_used: bool
     stages: list[StageRecord]
@@ -326,11 +340,21 @@ class ResurrectResponse:
     export_fastapi_code: str
     audit_trail: list[AttemptRecord]
     final_report: FinalReport
+    preset_id: str | None = None
+
+    @property
+    def certified(self) -> bool:
+        return self.final_report.certified
 
     def to_dict(self) -> dict[str, Any]:
-        """Response body for ``DecimalJSONResponse``. Decimals are kept as Decimal."""
+        """Response body for ``DecimalJSONResponse``."""
         return {
             "preset_id": self.preset_id,
+            "cobol_code": self.cobol_code,
+            "program_title": self.program_title,
+            "description": self.description,
+            "io_protocol": self.io_protocol,
+            "contract": self.contract,
             "cache_hit": self.cache_hit,
             "llm_used": self.llm_used,
             "stages": [s.to_dict() for s in self.stages],
@@ -340,117 +364,112 @@ class ResurrectResponse:
             "verified_python_code": self.verified_python_code,
             "export_fastapi_code": self.export_fastapi_code,
             "audit_trail": [a.to_dict() for a in self.audit_trail],
+            "parity_report": self.final_report.report.to_dict(),
             "final_report": self.final_report.to_dict(),
+            "certified": self.certified,
         }
 
 
 # ---------------------------------------------------------------------------
-# Contract-derived metadata (LLM values for names, bounds and steps are ignored)
+# Contract-derived metadata
 # ---------------------------------------------------------------------------
 
-_OUTPUT_FORMATS = frozenset({"currency", "integer", "decimal", "flag", "percent"})
-_MAX_LABEL = 80
+_MAX_TITLE = 120
+_CHART_TYPES = ("bar_comparison", "breakdown", "waterfall", "summary")
 
 
-def _llm_entries(llm_metadata: Mapping[str, Any] | None, key: str) -> dict[str, Mapping[str, Any]]:
-    entries = (llm_metadata or {}).get(key)
-    found: dict[str, Mapping[str, Any]] = {}
-    if isinstance(entries, list):
-        for entry in entries:
-            if isinstance(entry, Mapping) and isinstance(entry.get("name"), str):
-                found.setdefault(entry["name"], entry)
-    return found
+def build_dashboard_metadata(program: InferredProgram) -> dict[str, Any]:
+    """Dashboard JSON for any program.
 
-
-def _llm_label(entry: Mapping[str, Any] | None, default: str) -> str:
-    label = (entry or {}).get("label")
-    if isinstance(label, str) and 0 < len(label.strip()) <= _MAX_LABEL:
-        return label.strip()
-    return default
-
-
-def _default_format(f: FieldContract) -> str:
-    _, int_digits, _ = parse_pic(f.pic)
-    if f.scale == 0:
-        return "flag" if int_digits == 1 else "integer"
-    return "currency" if f.scale == 2 else "decimal"
-
-
-def build_dashboard_metadata(
-    schema: ContractSchema, llm_metadata: Mapping[str, Any] | None = None
-) -> dict[str, Any]:
-    """Dashboard JSON whose names, bounds and steps come only from ``schema``.
-
-    From ``llm_metadata`` only the display label (and a known output format) of a
-    field that exists in the schema is kept. Invented fields are dropped.
+    Field names, labels, bounds, steps and formats come from the inferred
+    contract. Only the title and a known chart type are taken from the LLM's
+    ``dashboard_metadata``.
     """
-    llm_inputs = _llm_entries(llm_metadata, "inputs")
-    llm_outputs = _llm_entries(llm_metadata, "outputs")
-    inputs = [
-        {
-            "name": f.name,
-            "label": _llm_label(llm_inputs.get(f.name), f.label),
-            "type": "integer" if f.scale == 0 else "decimal",
-            "min": f.min,
-            "max": f.max,
-            "step": f.step,
-        }
-        for f in schema.input_fields
-    ]
-    outputs = []
-    for f in schema.output_fields:
-        fmt = (llm_outputs.get(f.name) or {}).get("format")
-        outputs.append(
+    llm_meta = program.dashboard_metadata or {}
+    title = llm_meta.get("title")
+    chart = llm_meta.get("chart_type")
+    contract = normalize_contract(program.contract)
+    return {
+        "title": title.strip()[:_MAX_TITLE] if isinstance(title, str) and title.strip()
+        else program.program_title,
+        "chart_type": chart if chart in _CHART_TYPES else "summary",
+        "inputs": [
             {
-                "name": f.name,
-                "label": _llm_label(llm_outputs.get(f.name), f.label),
-                "format": fmt if fmt in _OUTPUT_FORMATS else _default_format(f),
+                "name": f["name"],
+                "label": f["label"],
+                "type": "integer" if int(f["scale"]) == 0 else "decimal",
+                "min": f.get("min"),
+                "max": f.get("max"),
+                "step": f.get("step"),
             }
-        )
-    return {"inputs": inputs, "outputs": outputs}
+            for f in contract["inputs"]
+        ],
+        "outputs": [
+            {"name": f["name"], "label": f["label"], "format": f["format"]}
+            for f in contract["outputs"]
+        ],
+    }
 
 
-def build_pic_mappings(
-    schema: ContractSchema, llm_mappings: Iterable[Mapping[str, Any]] | None = None
-) -> list[dict[str, str]]:
-    """One mapping per schema field, in schema order, with every value from ``schema``.
-
-    ``llm_mappings`` is accepted so callers can pass the parser output, but it
-    cannot add, remove or change an entry.
-    """
-    del llm_mappings
+def build_pic_mappings(schema: ContractSchema) -> list[dict[str, str]]:
+    """One mapping per schema field, in schema order."""
     return [
-        {
-            "name": f.name,
-            "pic": f.pic,
-            "scale": str(f.scale),
-            "rounding": f.rounding,
-        }
+        {"name": f.name, "pic": f.pic, "scale": str(f.scale), "rounding": f.rounding}
         for f in schema.all_fields
     ]
+
+
+# ---------------------------------------------------------------------------
+# Float guard (generated code outside the float demo attempt)
+# ---------------------------------------------------------------------------
+
+def find_float_construct(code: str) -> str | None:
+    """Describe the first float construct in ``code`` or return None.
+
+    Looks for the ``float`` name, float literals, ``math.pow`` and ``**`` with a
+    float literal operand. Code that does not parse is left to the verifier.
+    """
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+    for node in ast.walk(tree):
+        line = getattr(node, "lineno", "?")
+        if isinstance(node, ast.Name) and node.id == "float":
+            return f"float type used (line {line})"
+        if isinstance(node, ast.Constant) and isinstance(node.value, float):
+            return f"float literal used (line {line})"
+        if isinstance(node, ast.Attribute) and node.attr == "pow" \
+                and isinstance(node.value, ast.Name) and node.value.id == "math":
+            return f"math.pow used (line {line})"
+        if isinstance(node, ast.ImportFrom) and node.module == "math" \
+                and any(a.name == "pow" for a in node.names):
+            return f"math.pow imported (line {line})"
+    return None
 
 
 # ---------------------------------------------------------------------------
 # Self-healing loop (Parity_Auditor)
 # ---------------------------------------------------------------------------
 
-def _verification_error_status(exc: VerificationError, custom: bool) -> int:
-    """Same mapping as ``main._verify_blocking``."""
-    if exc.kind == "rejected":
-        return 400
-    if exc.kind == "run_timeout":
-        return 504
-    if exc.kind in ("compile_failed", "invalid_request"):
-        return 422
-    return 422 if custom else 500
+def _verification_error(exc: VerificationError) -> PipelineStageError:
+    status = {
+        "rejected": 400,
+        "compile_failed": 400,
+        "run_timeout": 504,
+        "invalid_request": 422,
+    }.get(exc.kind, 422)
+    return PipelineStageError(
+        status, "parity_auditor", {"error": exc.kind, "message": exc.message}
+    )
 
 
 class SelfHealingLoop:
-    """Verify, and on a parity failure repair with the first counterexample.
+    """Verify, and on a failure repair from the first Counterexample.
 
-    At most ``1 + MAX_RETRIES`` calls to ``run_verification``, all with the same
-    COBOL source. A ``VerificationError`` is never retried: it becomes a
-    ``PipelineStageError``. A parity failure is a normal report, not an exception.
+    At most ``MAX_RETRIES`` repairs. Generated code with float constructs is
+    never verified: it counts as a failed attempt (except in the demo attempt).
+    A ``VerificationError`` is not retried; it becomes a ``PipelineStageError``.
     """
 
     MAX_RETRIES = 2
@@ -461,196 +480,73 @@ class SelfHealingLoop:
 
     def run(
         self,
-        cobol_source: str | None,
-        preset_id: str | None,
-        rules: ParsedRules,
-        schema: ContractSchema,
-        first_attempt_code: str,
-        first_attempt_source: StageSource,
+        cobol_source: str,
+        program: InferredProgram,
+        first_code: str,
         num_cases: int,
         *,
-        first_attempt_float_bug: bool = False,
+        first_attempt_is_float_demo: bool = False,
         repair_fn: Callable[[Counterexample, str], str] | None = None,
-        max_attempts: int | None = None,
-        llm_source: str | None = None,
-        layout: str | None = None,
+        exact_fn: Callable[[], str] | None = None,
     ) -> tuple[list[AttemptRecord], FinalReport, str]:
         """Return ``(audit_trail, final_report, final_code)``.
 
-        Pipeline hooks: ``first_attempt_float_bug`` verifies attempt 1 through the
-        float-bug demonstration model (the restricted sandbox has no ``float``),
-        ``repair_fn`` replaces the LLM repair, ``max_attempts`` caps the attempts
-        (1 = never repair) and ``llm_source`` is the COBOL text shown to the LLM
-        when ``cobol_source`` is None (presets).
+        ``repair_fn`` and ``exact_fn`` replace the LLM calls (used to replay a
+        cached demo). ``exact_fn`` supplies exact Decimal code when a float demo
+        attempt happened to match COBOL exactly.
         """
-        del first_attempt_source  # stage bookkeeping belongs to the Pipeline
-        audit_trail: list[AttemptRecord] = []
-        code = first_attempt_code
-        last_attempt = 1 + self.MAX_RETRIES
-        if max_attempts is not None:
-            last_attempt = max(1, min(last_attempt, max_attempts))
-        for attempt in range(1, last_attempt + 1):
-            float_bug = first_attempt_float_bug and attempt == 1
-            try:
-                report = run_verification(
-                    layout or preset_id,
-                    cobol_source,
-                    num_cases=num_cases,
-                    python_code=None if float_bug else code,
-                    simulate_float_bug=float_bug,
-                    runner=self._runner,
+        trail: list[AttemptRecord] = []
+        code = first_code
+        float_attempt = first_attempt_is_float_demo
+        retries = 0
+        attempt = 0
+        while True:
+            attempt += 1
+            guard = None if float_attempt else find_float_construct(code)
+            if guard is not None:
+                cx = Counterexample(
+                    inputs={}, cobol_output={}, python_output={"error": guard},
+                    differing_field="python_code", penny_delta="0", likely_cause="python_error",
                 )
-            except VerificationError as exc:
-                raise PipelineStageError(
-                    _verification_error_status(exc, custom=preset_id is None or cobol_source is not None),
-                    "parity_auditor",
-                    {"error": exc.kind, "message": exc.message},
-                ) from exc
+                report = ParityReport.build(0, 1, 0, [], [cx])
+            else:
+                try:
+                    report = run_universal_verification(
+                        cobol_source,
+                        program.contract,
+                        program.io_protocol,
+                        code,
+                        num_cases=num_cases,
+                        allow_float_demo=float_attempt,
+                        runner=self._runner,
+                    )
+                except VerificationError as exc:
+                    raise _verification_error(exc) from exc
+                cx = report.counterexamples[0] if report.counterexamples else None
 
-            first_cx = report.counterexamples[0] if report.counterexamples else None
-            audit_trail.append(
+            trail.append(
                 AttemptRecord(
                     attempt=attempt,
                     parity_score_pct=report.parity_score_pct,
                     passed_cases=report.passed_cases,
                     total_cases=report.total_cases,
-                    counterexample=None if report.verified else first_cx,
+                    counterexample=None if report.verified else cx,
                 )
             )
-            if report.verified:
-                return audit_trail, FinalReport(report, True, "passed"), code
-            if attempt == last_attempt:
-                return audit_trail, FinalReport(report, False, "failed"), code
-            if first_cx is None:  # failed without a counterexample: nothing to repair from
-                return audit_trail, FinalReport(report, False, "failed"), code
-            if repair_fn is not None:
-                code = repair_fn(first_cx, code)
+            if report.verified and not float_attempt:
+                return trail, FinalReport(report, True, "passed"), code
+            if retries >= self.MAX_RETRIES or (not report.verified and cx is None):
+                return trail, FinalReport(report, False, "failed"), code
+
+            retries += 1
+            if report.verified:  # the float demo matched: still need exact Decimal code
+                code = exact_fn() if exact_fn is not None else \
+                    self._llm.generate_python(cobol_source, program).verified_python_code
+            elif repair_fn is not None:
+                code = repair_fn(cx, code)  # type: ignore[arg-type]
             else:
-                repaired = self._llm.repair_python(
-                    llm_source if llm_source is not None else cobol_source,
-                    rules, schema, first_cx, code,
-                )
-                code = repaired.verified_python_code
-        raise AssertionError("unreachable")  # pragma: no cover
-
-
-# ---------------------------------------------------------------------------
-# Reference (Decimal) source for Demo_Mode and the preset bundles
-# ---------------------------------------------------------------------------
-
-_SAMPLES_DIR = Path(__file__).resolve().parent.parent / "cobol_samples"
-BUNDLES_PATH = _SAMPLES_DIR / "preset_bundles.json"
-
-# Replaces ``reference_models._scaled_trunc``: the sandbox has no isinstance/map/str.
-_SANDBOX_PRELUDE = (
-    "_COB_MAX_DIGITS = 38\n\n"
-    "def _scaled_trunc(value, scale):\n"
-    "    return int(value.scaleb(scale))\n"
-)
-_REFERENCE_HELPERS = (
-    "_store_unsigned", "_store_signed", "_wrap_unsigned", "_wrap_signed",
-    "_cob_div", "_round_half_up", "_to_decimal",
-)
-
-
-class _SandboxFriendly(ast.NodeTransformer):
-    """Drop annotations and docstrings, and unwrap ``with localcontext(...)``."""
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
-        self.generic_visit(node)
-        node.returns = None
-        for arg in node.args.args + node.args.kwonlyargs:
-            arg.annotation = None
-        if (
-            node.body
-            and isinstance(node.body[0], ast.Expr)
-            and isinstance(node.body[0].value, ast.Constant)
-            and isinstance(node.body[0].value.value, str)
-            and len(node.body) > 1
-        ):
-            node.body = node.body[1:]
-        return node
-
-    def visit_With(self, node: ast.With) -> list[ast.stmt]:
-        self.generic_visit(node)
-        return node.body
-
-
-def reference_decimal_source(preset_id: str) -> str:
-    """Self-contained, sandbox-loadable Decimal source of a preset's reference model.
-
-    Built from ``inspect.getsource`` of the ``REGISTRY`` function and its helpers,
-    with a ``calculate`` entry point appended. Contains no float.
-    """
-    from . import reference_models
-
-    if preset_id not in reference_models.REGISTRY:
-        raise ValueError(f"unknown preset_id {preset_id!r}")
-    fn = reference_models.REGISTRY[preset_id]
-    parts = [_SANDBOX_PRELUDE]
-    for func in [getattr(reference_models, n) for n in _REFERENCE_HELPERS] + [fn]:
-        tree = _SandboxFriendly().visit(ast.parse(textwrap.dedent(inspect.getsource(func))))
-        parts.append(ast.unparse(ast.fix_missing_locations(tree)) + "\n")
-    parts.append(f"def calculate(**kwargs):\n    return {fn.__name__}(**kwargs)\n")
-    return "\n".join(parts)
-
-
-def _preset_source(preset_id: str) -> str:
-    return (_SAMPLES_DIR / f"{preset_id}.cbl").read_text(encoding="utf-8")
-
-
-def _reference_rules(schema: ContractSchema) -> ParsedRules:
-    rules = [
-        f"{f.name} is stored in PIC {f.pic} and "
-        + ("rounded half-up (COBOL ROUNDED)." if f.rounding == ROUND_HALF_UP else "truncated (COBOL default).")
-        for f in schema.output_fields
-    ]
-    return ParsedRules(business_rules=rules, pic_mappings=build_pic_mappings(schema))
-
-
-# ---------------------------------------------------------------------------
-# Preset bundle file
-#
-# preset_bundles.json = {preset_id: {"false": Entry, "true": Entry}} where the
-# key is ``demonstrate_self_healing`` as a string and Entry is
-#   {"business_rules": [str], "pic_mappings": [{name,pic,scale,rounding}],
-#    "dashboard_metadata": {...}, "verified_python_code": str,
-#    "export_fastapi_code": str,
-#    "stages": [{"name","status","elapsed_ms","source": "cache"}, ...]}
-# ---------------------------------------------------------------------------
-
-def load_preset_bundles(path: Path | None = None) -> dict[str, dict[str, Any]]:
-    """Parsed bundle file, or ``{}`` when it is missing or unreadable."""
-    try:
-        text = (path or BUNDLES_PATH).read_text(encoding="utf-8")
-        data = json.loads(text, parse_float=Decimal)
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _cached_from_entry(entry: Mapping[str, Any]) -> CachedResult:
-    return CachedResult(
-        business_rules=[str(r) for r in entry["business_rules"]],
-        pic_mappings=[dict(m) for m in entry["pic_mappings"]],
-        dashboard_metadata=dict(entry["dashboard_metadata"]),
-        verified_python_code=str(entry["verified_python_code"]),
-        export_fastapi_code=str(entry["export_fastapi_code"]),
-        stages=list(entry.get("stages", [])),
-    )
-
-
-def seed_cache(cache: PipelineCache, bundles: Mapping[str, Any]) -> None:
-    """Load every well-formed bundle entry into ``cache`` (existing keys win)."""
-    for preset_id in PRESET_IDS:
-        for flag in ("false", "true"):
-            try:
-                entry = bundles[preset_id][flag]
-                key = cache_key(_preset_source(preset_id), flag == "true")
-                if key not in cache:
-                    cache.put(key, _cached_from_entry(entry))
-            except (KeyError, TypeError, OSError):
-                continue
+                code = self._llm.repair_python(cobol_source, program, cx, code).verified_python_code
+            float_attempt = False
 
 
 # ---------------------------------------------------------------------------
@@ -661,152 +557,180 @@ def _ms(start: float) -> int:  # float-ok: timing
     return max(0, int((time.perf_counter() - start) * 1000))
 
 
+def _program_to_dict(program: InferredProgram) -> dict[str, Any]:
+    return {
+        "program_title": program.program_title,
+        "description": program.description,
+        "io_protocol": program.io_protocol,
+        "contract": program.contract,
+        "business_rules": list(program.business_rules),
+        "dashboard_metadata": program.dashboard_metadata,
+    }
+
+
+def _program_from_dict(data: Mapping[str, Any]) -> InferredProgram:
+    return InferredProgram(
+        program_title=str(data["program_title"]),
+        description=str(data["description"]),
+        io_protocol=str(data["io_protocol"]),
+        contract=data["contract"],
+        business_rules=[str(r) for r in data["business_rules"]],
+        dashboard_metadata=dict(data.get("dashboard_metadata") or {}),
+    )
+
+
+def _check_contract(program: InferredProgram) -> None:
+    """Requirements 5.9 and 5.10."""
+    inputs, outputs = program.contract.get("inputs", []), program.contract.get("outputs", [])
+    missing = []
+    if not outputs:
+        missing.append("outputs")
+    if program.io_protocol != "no_input_static" and not inputs:
+        missing.append("inputs")
+    if missing:
+        raise PipelineStageError(
+            422,
+            "legacy_parser",
+            {
+                "error": "incomplete_contract",
+                "message": f"The inferred contract has no {' and no '.join(missing)}.",
+            },
+        )
+
+
 class Pipeline:
     """Legacy_Parser -> Cloud_Architect -> Parity_Auditor orchestration."""
 
-    def __init__(
-        self,
-        llm: Any,
-        cache: PipelineCache,
-        bundles: Mapping[str, Any] | None = None,
-        runner: CobolRunner | None = None,
-    ):
+    def __init__(self, llm: Any, cache: PipelineCache, runner: CobolRunner | None = None):
         self._llm = llm
         self._cache = cache
         self._runner = runner
-        seed_cache(cache, load_preset_bundles() if bundles is None else bundles)
 
     def run(
         self,
+        cobol_code: str,
         *,
-        preset_id: str | None,
-        cobol_source: str | None,
-        schema: ContractSchema,
-        num_cases: int,
+        num_cases: int = 150,
         demonstrate_self_healing: bool = False,
         force_live_llm: bool = False,
-        layout: str | None = None,
+        preset_id: str | None = None,
     ) -> ResurrectResponse:
-        if preset_id is not None:
-            if preset_id not in PRESET_IDS:
-                raise PipelineStageError(
-                    404, None, {"error": "unknown_preset", "valid_ids": list(PRESET_IDS)}
-                )
-            source = _preset_source(preset_id)
-            verify_source = None  # the bundled preset binary is used
-        elif cobol_source is not None:
-            source = verify_source = cobol_source
-        else:
+        """Run any COBOL source through the live pipeline.
+
+        ``preset_id`` is only echoed back; the caller supplies the raw text.
+        """
+        verdict = validate_source(cobol_code)
+        if not verdict.accepted:
+            err = verdict.error
+            assert err is not None
+            status = 413 if err.token == "SOURCE-SIZE" else 400
             raise PipelineStageError(
-                422, None, {"error": "invalid_request", "message": "preset_id or cobol_code required"}
+                status, None,
+                {"error": "rejected", "token": err.token, "line": err.line, "message": err.message},
             )
-        if demonstrate_self_healing and preset_id is None:
+        runner = self._runner or _shared_runner()
+        compiled = runner.get_binary(cobol_code)  # compile once; verification reuses the binary
+        if not compiled.success:
             raise PipelineStageError(
-                422,
-                None,
-                {"error": "invalid_request", "message": "demonstration mode requires a preset_id"},
+                400, None,
+                {"error": "compile_failed", "message": (compiled.stderr or "compile failed").strip()[:2000]},
             )
 
-        key = cache_key(source, demonstrate_self_healing)
-        cached = None
-        if preset_id is not None and not force_live_llm:
-            cached = self._cache.get(key)
-        loop = SelfHealingLoop(self._llm, self._runner)
+        key = cache_key(cobol_code, demonstrate_self_healing)
+        cached = None if force_live_llm else self._cache.get(key)
+        loop = SelfHealingLoop(self._llm, runner)
         stages: list[StageRecord] = []
         llm_used = False
+        float_code: str | None = None
 
-        if demonstrate_self_healing:
-            t0 = time.perf_counter()
-            if cached is not None:
-                rules = ParsedRules(cached.business_rules, cached.pic_mappings)
-                metadata, decimal_code = cached.dashboard_metadata, cached.verified_python_code
-                stage_source: StageSource = "cache"
+        try:
+            if cached is not None and "program" in cached.extra:
+                program = _program_from_dict(cached.extra["program"])
+                first_code = cached.verified_python_code
+                float_code = cached.extra.get("float_demo_code")
+                stages += [
+                    StageRecord("legacy_parser", "ok", 0, "cache"),
+                    StageRecord("cloud_architect", "ok", 0, "cache"),
+                ]
             else:
-                rules = _reference_rules(schema)
-                metadata = build_dashboard_metadata(schema)
-                decimal_code = reference_decimal_source(preset_id)  # type: ignore[arg-type]
-                stage_source = "deterministic"
-            elapsed = _ms(t0)
-            stages += [
-                StageRecord("legacy_parser", "ok", elapsed, stage_source),
-                StageRecord("cloud_architect", "ok", 0, stage_source),
-            ]
-            t1 = time.perf_counter()
-            # Attempt 1: the float-bug model (FLOAT_BUG_REGISTRY). Attempt 2: the Decimal source.
-            trail, final, code = loop.run(
-                verify_source, preset_id, rules, schema, decimal_code, "deterministic", num_cases,
-                first_attempt_float_bug=True,
-                repair_fn=lambda _cx, _code: decimal_code,
-                max_attempts=2,
-            )
-            audit_source: StageSource = "deterministic"
-        elif cached is not None:
-            rules = ParsedRules(cached.business_rules, cached.pic_mappings)
-            metadata = cached.dashboard_metadata
-            stages += [
-                StageRecord("legacy_parser", "ok", 0, "cache"),
-                StageRecord("cloud_architect", "ok", 0, "cache"),
-            ]
-            t1 = time.perf_counter()
-            trail, final, code = loop.run(
-                verify_source, preset_id, rules, schema, cached.verified_python_code, "cache",
-                num_cases, max_attempts=1,  # a stale entry is never repaired
-            )
-            audit_source = "cache"
-        else:
-            self._llm.require_key()
-            llm_used = True
-            t0 = time.perf_counter()
-            rules = self._llm.extract_rules(source)
-            stages.append(StageRecord("legacy_parser", "ok", _ms(t0), "llm"))
-            t0 = time.perf_counter()
-            architect = self._llm.generate_python(source, rules, schema)
-            stages.append(StageRecord("cloud_architect", "ok", _ms(t0), "llm"))
-            metadata = architect.dashboard_metadata
-            t1 = time.perf_counter()
-            trail, final, code = loop.run(
-                verify_source, preset_id, rules, schema, architect.verified_python_code, "llm",
-                num_cases, llm_source=source, layout=layout,
-            )
-            audit_source = "llm" if len(trail) > 1 else "deterministic"
+                cached = None
+                self._llm.require_key()
+                llm_used = True
+                t0 = time.perf_counter()
+                program = self._llm.infer_contract(cobol_code)
+                _check_contract(program)
+                program = dataclasses.replace(program, contract=normalize_contract(program.contract))
+                stages.append(StageRecord("legacy_parser", "ok", _ms(t0), "llm"))
+                t0 = time.perf_counter()
+                architect = self._llm.generate_python(
+                    cobol_code, program, float_demo=demonstrate_self_healing
+                )
+                first_code = architect.verified_python_code
+                float_code = first_code if demonstrate_self_healing else None
+                stages.append(StageRecord("cloud_architect", "ok", _ms(t0), "llm"))
 
-        stages.append(
-            StageRecord("parity_auditor", "ok" if final.certified else "failed", _ms(t1), audit_source)
-        )
+            t1 = time.perf_counter()
+            if demonstrate_self_healing and cached is not None:
+                if float_code is None:
+                    raise PipelineStageError(
+                        500, "cloud_architect", {"error": "cache_incomplete", "message": "cached demo lacks float code"}
+                    )
+                exact = first_code
+                trail, final, code = loop.run(
+                    cobol_code, program, float_code, num_cases,
+                    first_attempt_is_float_demo=True,
+                    repair_fn=lambda _cx, _c: exact,
+                    exact_fn=lambda: exact,
+                )
+            else:
+                trail, final, code = loop.run(
+                    cobol_code, program, first_code, num_cases,
+                    first_attempt_is_float_demo=demonstrate_self_healing and cached is None,
+                )
+        except LLMUnavailable as exc:
+            raise _llm_unavailable_error(exc, "pipeline") from None
+        except LLMCallError as exc:
+            raise _llm_call_error(exc) from None
 
-        if cached is not None:
-            business_rules, pic_mappings = list(cached.business_rules), cached.pic_mappings
-            dashboard = cached.dashboard_metadata
-            export_code = cached.export_fastapi_code if code == cached.verified_python_code else render(code, schema)
-        else:
-            business_rules = list(rules.business_rules)
-            pic_mappings = build_pic_mappings(schema, rules.pic_mappings)
-            dashboard = build_dashboard_metadata(schema, metadata)
+        stages.append(StageRecord("parity_auditor", "ok" if final.certified else "failed", _ms(t1), "live"))
+
+        schema = schema_from_contract(program.contract)
+        dashboard = build_dashboard_metadata(program)
+        pic_mappings = build_pic_mappings(schema)
+        try:
             export_code = render(code, schema)
+        except ValueError:
+            export_code = ""  # uncertified or unusable code has no export
 
-        if cached is None and preset_id is not None and final.certified:
+        if final.certified and cached is None and llm_used:
             self._cache.put(
                 key,
                 CachedResult(
-                    business_rules=business_rules,
+                    business_rules=list(program.business_rules),
                     pic_mappings=pic_mappings,
                     dashboard_metadata=dashboard,
                     verified_python_code=code,
                     export_fastapi_code=export_code,
-                    stages=[StageRecord(s.name, "ok", 0, "cache") for s in stages[:2]],
+                    stages=[StageRecord(s.name, "ok", 0, "cache").to_dict() for s in stages[:2]],
+                    extra={"program": _program_to_dict(program), "float_demo_code": float_code},
                 ),
             )
 
         return ResurrectResponse(
-            preset_id=preset_id,
+            cobol_code=cobol_code,
+            program_title=program.program_title,
+            description=program.description,
+            io_protocol=program.io_protocol,
+            contract=program.contract,
             cache_hit=cached is not None,
             llm_used=llm_used,
             stages=stages,
-            business_rules=business_rules,
+            business_rules=list(program.business_rules),
             pic_mappings=pic_mappings,
             dashboard_metadata=dashboard,
             verified_python_code=code,
             export_fastapi_code=export_code,
             audit_trail=trail,
             final_report=final,
+            preset_id=preset_id,
         )

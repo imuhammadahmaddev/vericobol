@@ -36,11 +36,21 @@ function causeLabel(cause: string): string {
   return CAUSE_LABEL[cause as LikelyCause] ?? cause;
 }
 
-/** Render a field map as raw "name=value" pairs, values verbatim. */
-function fmt(map: Record<string, string>): string {
-  return Object.entries(map)
-    .map(([k, v]) => `${k}=${v}`)
-    .join(", ");
+/** Render a field map as inline "name=value" chips; a chip never splits, lines wrap between chips. */
+function Chips({ map, tone = "text-slate-100" }: { map: Record<string, string>; tone?: string }) {
+  return (
+    <span className="flex flex-wrap gap-1">
+      {Object.entries(map).map(([k, v]) => (
+        <span
+          key={k}
+          data-testid="kv-chip"
+          className={`whitespace-nowrap rounded border border-slate-700 bg-[#0F172A] px-1.5 py-0.5 ${tone}`}
+        >
+          {`${k}=${v}`}
+        </span>
+      ))}
+    </span>
+  );
 }
 
 export interface AuditTrailProps {
@@ -104,9 +114,9 @@ export default function AuditTrail({ attempts, finalReport }: AuditTrailProps) {
     <section
       data-testid="audit-trail"
       aria-label="Self-healing audit trail"
-      className="w-full rounded-lg border border-slate-200 bg-white p-4 text-slate-900"
+      className="w-full rounded-lg border border-slate-800 bg-[#0F172A] p-4 text-slate-100"
     >
-      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-600">
+      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">
         Audit Trail
       </h2>
 
@@ -135,7 +145,7 @@ export default function AuditTrail({ attempts, finalReport }: AuditTrailProps) {
       )}
 
       {rows.length === 0 ? (
-        <p data-testid="audit-empty" className="text-sm text-slate-600">
+        <p data-testid="audit-empty" className="text-sm text-slate-400">
           No discrepancies found; no repair needed
         </p>
       ) : (
@@ -145,7 +155,7 @@ export default function AuditTrail({ attempts, finalReport }: AuditTrailProps) {
             className="w-full border-collapse text-left font-mono text-xs"
           >
             <thead>
-              <tr className="border-b border-slate-300 text-slate-600">
+              <tr className="border-b border-slate-700 text-slate-400">
                 <th className="px-2 py-1">Attempt</th>
                 <th className="px-2 py-1">Inputs</th>
                 <th className="px-2 py-1">GnuCOBOL Exact</th>
@@ -160,13 +170,17 @@ export default function AuditTrail({ attempts, finalReport }: AuditTrailProps) {
                 <tr
                   key={r.key}
                   data-testid="audit-diff-row"
-                  className="border-b border-slate-100 align-top"
+                  className="border-b border-slate-800 align-top"
                 >
                   <td className="px-2 py-1">{r.attempt}</td>
-                  <td className="px-2 py-1 break-all">{fmt(r.ce.inputs)}</td>
-                  <td className="px-2 py-1 break-all">{fmt(r.ce.cobol_output)}</td>
-                  <td className="px-2 py-1 break-all text-[#EF4444]">
-                    {fmt(r.ce.python_output)}
+                  <td className="px-2 py-1">
+                    <Chips map={r.ce.inputs} />
+                  </td>
+                  <td className="px-2 py-1">
+                    <Chips map={r.ce.cobol_output} />
+                  </td>
+                  <td className="px-2 py-1">
+                    <Chips map={r.ce.python_output} tone="text-[#EF4444]" />
                   </td>
                   <td className="px-2 py-1">{r.ce.differing_field}</td>
                   <td className="px-2 py-1">{r.ce.penny_delta}</td>
@@ -174,7 +188,7 @@ export default function AuditTrail({ attempts, finalReport }: AuditTrailProps) {
                     <span
                       data-testid="cause-badge"
                       data-cause={r.ce.likely_cause}
-                      className="inline-block rounded-full border border-[#EF4444] bg-[#EF4444]/10 px-2 py-0.5 font-sans font-semibold text-[#EF4444]"
+                      className="inline-block whitespace-nowrap rounded-full border border-[#EF4444] bg-[#EF4444]/10 px-2 py-0.5 font-sans font-semibold text-[#EF4444]"
                     >
                       {causeLabel(r.ce.likely_cause)}
                     </span>

@@ -14,9 +14,9 @@ from app.cobol_runner import validate_source
 _CONSTRUCTS: tuple[tuple[tuple[str, ...], tuple[str, ...], bool], ...] = (
     (("CALL", "WS-PROG"), ("CALL",), False),
     (("MOVE", "1", "TO", "SYSTEM"), ("SYSTEM",), False),
-    (("OPEN", "OUTPUT", "OUT-FILE"), ("OPEN OUTPUT/EXTEND/I-O",), False),
-    (("OPEN", "EXTEND", "OUT-FILE"), ("OPEN OUTPUT/EXTEND/I-O",), False),
-    (("OPEN", "I-O", "OUT-FILE"), ("OPEN OUTPUT/EXTEND/I-O",), False),
+    (("OPEN", "OUTPUT", "OUT-FILE"), ("OPEN",), False),
+    (("OPEN", "EXTEND", "OUT-FILE"), ("OPEN",), False),
+    (("OPEN", "I-O", "OUT-FILE"), ("OPEN",), False),
     (("SELECT", "OUT-FILE", "ASSIGN", "TO", "WS-NAME"), ("SELECT ... ASSIGN",), False),
     (("READ", "IN-FILE"), ("READ",), False),
     (("WRITE", "OUT-REC"), ("WRITE",), False),

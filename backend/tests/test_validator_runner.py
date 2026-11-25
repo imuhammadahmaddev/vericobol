@@ -39,9 +39,9 @@ def _prog(stmt: str) -> str:
     [
         ('CALL "SYSTEM" USING CMD.', "CALL"),
         ('CALL "other" USING X.', "CALL"),
-        ("OPEN OUTPUT F.", "OPEN OUTPUT/EXTEND/I-O"),
-        ("OPEN EXTEND F.", "OPEN OUTPUT/EXTEND/I-O"),
-        ("OPEN I-O F.", "OPEN OUTPUT/EXTEND/I-O"),
+        ("OPEN OUTPUT F.", "OPEN"),
+        ("OPEN EXTEND F.", "OPEN"),
+        ("OPEN I-O F.", "OPEN"),
         ("SELECT F ASSIGN TO 'x'.", "SELECT ... ASSIGN"),
         ("READ F.", "READ"),
         ("WRITE R.", "WRITE"),
@@ -69,7 +69,7 @@ def test_rejection_names_token_and_line(stmt, token):
 def test_rejection_is_case_insensitive_and_multiline():
     res = validate_source(HEADER + "    open\n      output F.\n    STOP RUN.\n")
     assert not res.accepted
-    assert res.error.token == "OPEN OUTPUT/EXTEND/I-O"
+    assert res.error.token == "OPEN"
     assert res.error.line == 4
 
 

@@ -1,0 +1,529 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1.1 Rework `backend/app/llm_client.py`": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610788261
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610797509
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611204333
+      }
+    ],
+    "1.2 Update `.env.example`": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610788313
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610798036
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611204539
+      }
+    ],
+    "2.1 Rework `validate_source()` in `backend/app/cobol_runner.py`": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610788407
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610798160
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611204836
+      }
+    ],
+    "2.2 Rework `CobolRunner` in `backend/app/cobol_runner.py`": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610788519
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611813541
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611978837
+      }
+    ],
+    "3.1 Rework `backend/app/pipeline_cache.py`": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610788644
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610798375
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611205651
+      }
+    ],
+    "3.2 Update `backend/app/export_template.py`": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610788755
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610798641
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611206444
+      }
+    ],
+    "4.1 Rework `backend/app/pbt_verifier.py` with protocol adapters": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610788832
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611995568
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795612503026
+      }
+    ],
+    "5.1 Rework `backend/app/resurrection.py`": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610788906
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795612509033
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795612770158
+      }
+    ],
+    "6.1 Update `backend/app/main.py` for resurrect, presets and health": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610788987
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795612770482
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795612972617
+      }
+    ],
+    "6.2 Add `POST /api/calculate-custom` and `POST /api/export-custom` in `backend/app/main.py`": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610789137
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795612973236
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795613224578
+      }
+    ],
+    "6.3 Remove remaining runtime uses of retired artifacts": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610789242
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795613225059
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795613361227
+      }
+    ],
+    "7. Checkpoint - Backend complete": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610789362
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795613367681
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795613509117
+      }
+    ],
+    "8.1 Update types, API client, hooks and helpers": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610789458
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611211880
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611804846
+      }
+    ],
+    "8.2 Build the Legacy_Panel and Starter Templates": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610789528
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611814635
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611979638
+      }
+    ],
+    "8.3 Build the dynamic Cloud_Dashboard and chart": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610789582
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611814771
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611980463
+      }
+    ],
+    "8.4 Update export, audit, stepper, health and theme components": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610789626
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611815050
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611981218
+      }
+    ],
+    "8.5 Document the theme in `.kiro/steering/frontend-design.md`": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610789721
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611816315
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611987689
+      }
+    ],
+    "8.6 Wire `frontend/src/app/page.tsx`": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610789794
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611995766
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795612503778
+      }
+    ],
+    "9.1 Rewrite tests that expected the `preset_bundles.json` bypass": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610789891
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795613509764
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795614321604
+      }
+    ],
+    "10.1 Create `backend/tests/test_universal_cobol.py` fixtures and program tests": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610790024
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795614323234
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795614449606
+      }
+    ],
+    "10.2 Extend `backend/tests/test_universal_cobol.py` with endpoint and failure tests": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610790146
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795614450274
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795614613603
+      }
+    ],
+    "11.1 Update root `README.md`": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610790259
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795613514078
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795614322387
+      }
+    ],
+    "12. Checkpoint - Implementation and tests complete": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610790352
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795614614429
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795614619970
+      }
+    ],
+    "13.1 Docker build and full pytest": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610790478
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795614621191
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795614769357
+      }
+    ],
+    "13.2 Frontend checks": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610790563
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795614621291
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795614770134
+      }
+    ],
+    "13.3 Port 8001 smoke check": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610790642
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795614770688
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795614849937
+      }
+    ],
+    "13.4 Secret check, update checkboxes, commit and push": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795610790779
+      },
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795614850517
+      }
+    ],
+    "1. LLM client: env config, budget, parsing, contract inference": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611204669
+      }
+    ],
+    "3. Pipeline cache and export template": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611206544
+      }
+    ],
+    "2. Sandbox validator and COBOL runner": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795611978918
+      }
+    ],
+    "4. Universal Verification_Engine": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795612503127
+      }
+    ],
+    "8. Frontend": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795612503828
+      }
+    ],
+    "5. Pipeline orchestration without bundle bypass": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795612770348
+      }
+    ],
+    "6. API endpoints": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795613361403
+      }
+    ],
+    "9. Update older backend tests": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795614321663
+      }
+    ],
+    "11. README": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795614322465
+      }
+    ],
+    "10. Universal tests with a mocked LLM": [
+      {
+        "executionId": "323a37d7-0a94-462e-8353-243ed565206d",
+        "chatSessionId": "sess_bd5939bb-bef3-4e7c-a96a-2f4418962d5c",
+        "timestamp": 1795614613741
+      }
+    ]
+  }
+}

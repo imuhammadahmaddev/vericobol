@@ -25,7 +25,7 @@ Do NOT install `pandas`, `numpy`, `scipy`, `torch`, or any heavy ML framework. U
 
 ## LLM Client
 - OpenAI-compatible client configured only through env vars: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`.
-- Local dev may use $0 providers (Groq, Gemini). Production uses a budget model (`gpt-5-nano`). Total LLM budget: $2.
+- Local dev may use $0 providers (Groq, Gemini). Production uses a budget model (`gpt-6-luna`). Total LLM budget: $2.
 - Never hardcode keys or endpoints. `.env.example` holds placeholders only.
 
 ## Other Env Vars

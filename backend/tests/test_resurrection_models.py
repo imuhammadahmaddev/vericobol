@@ -1,7 +1,4 @@
-"""Unit tests for the resurrection data models and contract-derived metadata.
-
-**Validates: Requirements 1.2, 1.5, 1.7, 2.3, 2.4, 7.2, 7.4, 7.8**
-"""
+"""Unit tests for the resurrection data models and contract-derived metadata."""
 
 from __future__ import annotations
 
@@ -11,7 +8,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.catalog import DecimalJSONResponse, load_presets
+from app.catalog import DecimalJSONResponse
 from app.pbt_verifier import Counterexample, ParityReport
 from app.resurrection import (
     AttemptRecord,
@@ -22,9 +19,12 @@ from app.resurrection import (
     build_dashboard_metadata,
     build_pic_mappings,
     contract_from_field_schema,
-    contract_from_preset,
+    normalize_contract,
     parse_pic,
+    schema_from_contract,
 )
+
+from .conftest import preset_program
 
 PRESETS = ("loan_calc", "compound_int", "daily_ledger")
 
@@ -43,21 +43,6 @@ def test_parse_pic(pic, expected):
 def test_parse_pic_rejects_text():
     with pytest.raises(ValueError):
         parse_pic("X(10)")
-
-
-@pytest.mark.parametrize("preset_id", PRESETS)
-def test_preset_contract_matches_catalog(preset_id):
-    entry = next(p for p in load_presets() if p["preset_id"] == preset_id)
-    schema = contract_from_preset(preset_id)
-    assert [f.name for f in schema.input_fields] == [f["name"] for f in entry["input_schema"]]
-    for f, cat in zip(schema.input_fields, entry["input_schema"]):
-        assert (f.min, f.max, f.step) == (Decimal(cat["min"]), Decimal(cat["max"]), Decimal(cat["step"]))
-    assert schema.output_fields
-
-
-def test_unknown_preset_lists_valid_ids():
-    with pytest.raises(ValueError, match="loan_calc"):
-        contract_from_preset("nope")
 
 
 def test_custom_schema_defaults_bounds_from_pic():
@@ -90,40 +75,61 @@ def test_custom_schema_rejects_binary_float_bound():
         ])
 
 
-@pytest.mark.parametrize("preset_id", PRESETS)
-def test_metadata_ignores_adversarial_llm_values(preset_id):
-    schema = contract_from_preset(preset_id)
-    first = schema.input_fields[0]
-    evil = {
-        "inputs": [
-            {"name": first.name, "label": "Nice Label", "min": "-1", "max": "9" * 30, "step": "7"},
-            {"name": "invented", "min": "0", "max": "1", "step": "1"},
-        ],
-        "outputs": [{"name": "ghost", "format": "currency"}],
+def test_normalize_contract_fills_missing_bounds_and_rounding():
+    contract = {
+        "inputs": [{"name": "amt", "label": "Amt", "pic": "S9(3)V99", "scale": 2}],
+        "outputs": [{"name": "o", "label": "O", "pic": "9(4)V99", "scale": 2,
+                     "rounding": "rounded", "format": "currency"}],
     }
-    meta = build_dashboard_metadata(schema, evil)
-    assert [c["name"] for c in meta["inputs"]] == [f.name for f in schema.input_fields]
-    assert [c["name"] for c in meta["outputs"]] == [f.name for f in schema.output_fields]
-    ctl = meta["inputs"][0]
-    assert ctl["label"] == "Nice Label"
-    assert (ctl["min"], ctl["max"], ctl["step"]) == (first.min, first.max, first.step)
+    norm = normalize_contract(contract)
+    amt = norm["inputs"][0]
+    assert (amt["min"], amt["max"], amt["step"]) == ("-999.99", "999.99", "0.01")
+    assert norm["outputs"][0]["rounding"] == "ROUND_HALF_UP"
+    assert "min" not in contract["inputs"][0]  # the input is not mutated
+    typed = schema_from_contract(norm)
+    assert typed.input_fields[0].min == Decimal("-999.99")
+    assert typed.output_fields[0].rounding == "ROUND_HALF_UP"
 
-    mappings = build_pic_mappings(schema, [{"name": "invented", "pic": "X", "scale": "9", "rounding": "x"}])
-    assert [m["name"] for m in mappings] == [f.name for f in schema.all_fields]
+
+@pytest.mark.parametrize("preset_id", PRESETS)
+def test_metadata_comes_from_the_contract_not_the_llm(preset_id):
+    program = preset_program(preset_id)
+    first = program.contract["inputs"][0]
+    evil = dict(program.dashboard_metadata, title="  Nice Title  ", chart_type="not_a_chart")
+    evil["inputs"] = [{"name": "invented", "min": "0", "max": "1", "step": "1"}]
+    evil["outputs"] = [{"name": "ghost", "format": "currency"}]
+    program = type(program)(**{**program.__dict__, "dashboard_metadata": evil})
+
+    meta = build_dashboard_metadata(program)
+    assert meta["title"] == "Nice Title" and meta["chart_type"] == "summary"
+    assert [c["name"] for c in meta["inputs"]] == [f["name"] for f in program.contract["inputs"]]
+    assert [c["name"] for c in meta["outputs"]] == [f["name"] for f in program.contract["outputs"]]
+    ctl = meta["inputs"][0]
+    assert (ctl["min"], ctl["max"], ctl["step"]) == (first["min"], first["max"], first["step"])
+
+    mappings = build_pic_mappings(schema_from_contract(normalize_contract(program.contract)))
+    assert [m["name"] for m in mappings] == [
+        f["name"] for f in program.contract["inputs"] + program.contract["outputs"]
+    ]
     assert all(set(m) == {"name", "pic", "scale", "rounding"} for m in mappings)
 
 
 def _response() -> ResurrectResponse:
-    cex = Counterexample({"a": "1"}, {"o": "1.00"}, {"o": "1.01"}, "o", "0.01", "float drift")
-    report = ParityReport.build(0, 1, 1.0, [], [cex])
+    program = preset_program("loan_calc")
+    cex = Counterexample({"a": "1"}, {"o": "1.00"}, {"o": "1.01"}, "o", "0.01", "float_drift")
+    report = ParityReport.build(0, 1, 1, [], [cex])
     return ResurrectResponse(
-        preset_id=None,
+        cobol_code="SRC",
+        program_title=program.program_title,
+        description=program.description,
+        io_protocol=program.io_protocol,
+        contract=program.contract,
         cache_hit=False,
         llm_used=True,
         stages=[StageRecord("legacy_parser", "ok", 3, "llm")],
         business_rules=["r"],
         pic_mappings=[],
-        dashboard_metadata=build_dashboard_metadata(contract_from_preset("loan_calc")),
+        dashboard_metadata=build_dashboard_metadata(program),
         verified_python_code="x",
         export_fastapi_code="y",
         audit_trail=[AttemptRecord(1, "0.00", 0, 1, cex)],
@@ -131,10 +137,9 @@ def _response() -> ResurrectResponse:
     )
 
 
-def test_response_to_dict_has_eleven_keys_and_keeps_decimals():
+def test_response_to_dict_keeps_decimals_as_strings_in_json():
     body = _response().to_dict()
-    assert len(body) == 11 and body["preset_id"] is None
-    assert body["dashboard_metadata"]["inputs"][0]["min"] == Decimal("0.01")
+    assert body["preset_id"] is None and body["certified"] is False
     assert body["final_report"]["certified"] is False
     rendered = json.loads(DecimalJSONResponse(body).body)
     assert rendered["dashboard_metadata"]["inputs"][0]["min"] == "0.01"

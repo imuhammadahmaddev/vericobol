@@ -5,7 +5,12 @@ import type { ReactNode } from "react";
 import type { ResurrectResponse } from "@/lib/types";
 
 interface VerifiedPythonTabProps {
-  result: Pick<ResurrectResponse, "preset_id" | "verified_python_code" | "final_report">;
+  result: Pick<ResurrectResponse, "verified_python_code" | "final_report"> &
+    Partial<Pick<ResurrectResponse, "preset_id" | "program_title" | "certified">>;
+}
+
+function slug(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 }
 
 const KEYWORDS = new Set([
@@ -50,7 +55,7 @@ export function highlightPython(code: string): ReactNode[] {
 }
 
 export default function VerifiedPythonTab({ result }: VerifiedPythonTabProps) {
-  const { verified_python_code: code, final_report: report, preset_id } = result;
+  const { verified_python_code: code, final_report: report, preset_id, program_title } = result;
   const [copied, setCopied] = useState<"idle" | "ok" | "error">("idle");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -77,7 +82,8 @@ export default function VerifiedPythonTab({ result }: VerifiedPythonTabProps) {
   }, [code]);
 
   const onDownload = useCallback(() => {
-    const name = `${preset_id ?? "custom"}.py`;
+    const base = (program_title ? slug(program_title) : "") || preset_id || "custom";
+    const name = `${base}.py`;
     const blob = new Blob([code], { type: "text/x-python;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -87,37 +93,37 @@ export default function VerifiedPythonTab({ result }: VerifiedPythonTabProps) {
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
-  }, [code, preset_id]);
+  }, [code, preset_id, program_title]);
 
-  const certified = report?.certified === true;
+  const certified = (result.certified ?? report?.certified) === true;
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 rounded-xl border border-slate-800 bg-[#0F172A] p-3">
       <div className="flex flex-wrap items-center gap-2">
         {certified && (
           <span
             data-testid="zero-floats-badge"
-            className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-[#10B981]"
+            className="inline-flex items-center gap-1 rounded-full bg-[#10B981]/10 px-3 py-1 text-xs font-semibold text-[#10B981] ring-1 ring-[#10B981]"
           >
             <span aria-hidden="true">✓</span> 0 floats verified
           </span>
         )}
         <div className="ml-auto flex items-center gap-2">
-          <span role="status" aria-live="polite" className="text-xs text-slate-600">
+          <span role="status" aria-live="polite" className="text-xs text-slate-400">
             {copied === "ok" && "Copied to clipboard"}
             {copied === "error" && "Copy failed"}
           </span>
           <button
             type="button"
             onClick={onCopy}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#10B981]"
+            className="rounded-lg border border-slate-700 bg-[#1E293B] px-3 py-1.5 text-sm font-medium text-slate-100 hover:bg-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#10B981]"
           >
             Copy
           </button>
           <button
             type="button"
             onClick={onDownload}
-            className="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#10B981]"
+            className="rounded-lg bg-[#10B981] px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#10B981]"
           >
             Download .py
           </button>
@@ -126,7 +132,7 @@ export default function VerifiedPythonTab({ result }: VerifiedPythonTabProps) {
       <pre
         tabIndex={0}
         aria-label="Verified Python source"
-        className="max-h-[32rem] overflow-auto rounded-xl bg-slate-900 p-4 font-mono text-xs leading-relaxed text-slate-100"
+        className="max-h-[32rem] overflow-auto rounded-xl bg-[#1E293B] p-4 font-mono text-xs leading-relaxed text-slate-100"
       >
         <code>{highlightPython(code)}</code>
       </pre>

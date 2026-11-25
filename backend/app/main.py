@@ -1,47 +1,46 @@
-"""VeriCOBOL FastAPI application: CORS, request size limit, /health, warm-up."""
+"""VeriCOBOL FastAPI application: CORS, request size limit, /health, presets, resurrect."""
 
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
-from contextlib import asynccontextmanager
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import (
-    BaseModel,
-    BeforeValidator,
-    ConfigDict,
-    Field,
-    ValidationError,
-    model_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError, model_validator
 
 from .catalog import DecimalJSONResponse, load_presets
 from .cobol_runner import validate_source
-from .llm_client import BudgetExceeded, LLMCallError, LLMClient, LLMKeyMissing
+from .export_template import render as render_export
+from .llm_client import LLMCallError, LLMClient, LLMUnavailable
+from .pbt_verifier import (
+    Case,
+    VerificationError,
+    _check_run,
+    _compare_case,
+    _contract_fields,
+    _fmt,
+    _shared_runner,
+    _to_value,
+    parse_outputs,
+    render_stdin,
+    run_universal_verification,
+    run_user_python,
+)
 from .pipeline_cache import PipelineCache
 from .resurrection import (
     Pipeline,
     PipelineStageError,
-    contract_from_field_schema,
-    contract_from_preset,
-    load_preset_bundles,
-)
-from .pbt_verifier import (
-    _OUTPUT_FIELDS,
-    MAX_CASES,
-    VerificationError,
-    _catalog,
-    _fields,
-    run_verification,
+    normalize_contract,
+    schema_from_contract,
 )
 
 logger = logging.getLogger("vericobol")
@@ -50,7 +49,8 @@ MAX_BODY_BYTES = 128 * 1024
 RESURRECT_MAX_BODY_BYTES = 256 * 1024
 DEFAULT_FRONTEND_URL = "http://localhost:3000"
 DEFAULT_NUM_CASES = 150
-PRESET_IDS = ("loan_calc", "compound_int", "daily_ledger")
+RESURRECT_MIN_CASES = 150
+RESURRECT_MAX_CASES = 200
 
 
 def _frontend_origin() -> str:
@@ -84,7 +84,12 @@ class BodySizeLimitMiddleware:
     def __init__(self, app, max_bytes: int = MAX_BODY_BYTES):
         self.app = app
         self.max_bytes = max_bytes
-        self.path_limits = {"/api/resurrect": max(max_bytes, RESURRECT_MAX_BODY_BYTES)}
+        big = max(max_bytes, RESURRECT_MAX_BODY_BYTES)
+        self.path_limits = {
+            "/api/resurrect": big,
+            "/api/calculate-custom": big,
+            "/api/export-custom": big,
+        }
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
@@ -121,26 +126,7 @@ class BodySizeLimitMiddleware:
         await send({"type": "http.response.body", "body": body})
 
 
-def _warm_presets() -> None:
-    """Compile the three presets once so the first request is not cold."""
-    try:
-        from .pbt_verifier import _shared_runner
-
-        runner = _shared_runner()
-        for preset_id in PRESET_IDS:
-            runner.compile_and_run_preset(preset_id, [])
-    except Exception:  # warm-up is best-effort and must never affect serving
-        logger.warning("Preset warm-up failed", exc_info=True)
-
-
-@asynccontextmanager
-async def lifespan(_app: FastAPI):
-    if os.environ.get("VERICOBOL_SKIP_WARMUP") != "1":
-        threading.Thread(target=_warm_presets, name="preset-warmup", daemon=True).start()
-    yield
-
-
-app = FastAPI(title="VeriCOBOL", lifespan=lifespan)
+app = FastAPI(title="VeriCOBOL")
 app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
@@ -150,325 +136,56 @@ app.add_middleware(
 )
 
 
-class _JsonFloat(Decimal):
-    """Marks a JSON number written with a fraction/exponent (a float literal)."""
-
-
 def _reject_constant(name: str):
     raise ValueError(f"JSON constant {name} is not allowed")
-
-
-def _money(value: Any) -> Decimal:
-    """Money_Value: JSON string or integer. A float literal is rejected (Req 17.13)."""
-    if isinstance(value, _JsonFloat):
-        raise ValueError("float-typed Money_Value is not allowed; send a string or integer")
-    if isinstance(value, bool):
-        raise ValueError("Money_Value must be a string or integer")
-    if isinstance(value, int):
-        return Decimal(value)
-    if isinstance(value, str):
-        try:
-            result = Decimal(value.strip())
-        except InvalidOperation:
-            raise ValueError("Money_Value is not a valid decimal number") from None
-        if not result.is_finite():
-            raise ValueError("Money_Value must be finite")
-        return result
-    raise ValueError("Money_Value must be a string or integer")
-
-
-MoneyValue = Annotated[Decimal, BeforeValidator(_money)]
-
-
-class FieldSpec(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(min_length=1, max_length=64)
-    min: MoneyValue
-    max: MoneyValue
-    step: MoneyValue
-
-    @model_validator(mode="after")
-    def _bounds(self) -> "FieldSpec":
-        if self.min > self.max:
-            raise ValueError("min must not exceed max")
-        if self.step <= 0:
-            raise ValueError("step must be positive")
-        return self
-
-
-class VerifyRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    preset_id: str | None = None
-    cobol_code: str | None = None
-    python_code: str | None = None
-    field_schema: list[FieldSpec] | None = Field(default=None, max_length=32)
-    num_cases: int = Field(default=DEFAULT_NUM_CASES, ge=1, le=MAX_CASES, strict=True)
-    simulate_float_bug: bool = False
-
-    @model_validator(mode="after")
-    def _shape(self) -> "VerifyRequest":
-        if (self.preset_id is None) == (self.cobol_code is None):
-            raise ValueError("supply exactly one of preset_id or cobol_code")
-        if self.cobol_code is not None and (
-            self.python_code is None or not self.field_schema
-        ):
-            raise ValueError("cobol_code requires python_code and field_schema")
-        return self
 
 
 def _error(status: int, detail: Any) -> DecimalJSONResponse:
     return DecimalJSONResponse({"detail": detail}, status_code=status)
 
 
-def _layout_for_schema(schema: list[FieldSpec]) -> str | None:
-    """Preset layout whose input names equal the schema's names, else None."""
-    names = sorted(f.name for f in schema)
-    for preset_id in PRESET_IDS:
-        if names == sorted(f.name for f in _fields(preset_id)):
-            return preset_id
-    return None
-
-
 _VERIFY_LOCK = threading.Lock()  # one verification at a time: RAM and 0.1 CPU budget
 
 
-def _verify_blocking(req: VerifyRequest, layout: str) -> DecimalJSONResponse:
-    try:
-        with _VERIFY_LOCK:
-            report = run_verification(
-                layout,
-                req.cobol_code,
-                None,
-                req.num_cases,
-                python_code=req.python_code,
-                simulate_float_bug=req.simulate_float_bug,
-            )
-    except VerificationError as exc:
-        custom = req.cobol_code is not None
-        if exc.kind == "rejected":
-            return _error(400, {"error": "rejected", "message": exc.message})
-        if exc.kind == "run_timeout":
-            return _error(504, {"error": exc.kind, "message": exc.message})
-        if exc.kind in ("compile_failed", "invalid_request"):
-            return _error(422, {"error": exc.kind, "message": exc.message})
-        # run_failed / output_truncated / row_count_mismatch: a pasted program that
-        # breaks the Batch_Protocol is a 422; a bundled preset doing so is a server fault.
-        return _error(422 if custom else 500, {"error": exc.kind, "message": exc.message})
-    return DecimalJSONResponse(report.to_dict())
+# ---------------------------------------------------------------------------
+# Health and presets
+# ---------------------------------------------------------------------------
+
+@app.get("/health")
+def health() -> dict:
+    """Cheap liveness probe: no LLM call, no compile. ``cobc --version`` is cached."""
+    available, version = _cobc_info()
+    return {
+        "status": "ok",
+        "cobc_available": available,
+        "cobc_version": version,
+        "llm_configured": LLMClient.from_env().config is not None,
+    }
 
 
-@app.post("/api/verify", response_class=DecimalJSONResponse)
-async def verify(request: Request) -> DecimalJSONResponse:
-    body = await request.body()
-    if len(body) > MAX_BODY_BYTES:  # chunked uploads carry no Content-Length
-        return _error(413, f"Request body exceeds {MAX_BODY_BYTES} bytes")
-    try:
-        data = json.loads(body, parse_float=_JsonFloat, parse_constant=_reject_constant)
-    except (ValueError, RecursionError):
-        return _error(422, "request body is not valid JSON")
-    try:
-        req = VerifyRequest.model_validate(data)
-    except ValidationError as exc:
-        return _error(
-            422,
-            [
-                {"loc": list(e["loc"]), "msg": e["msg"], "type": e["type"]}
-                for e in exc.errors(include_url=False, include_context=False, include_input=False)
-            ],
-        )
-
-    if req.preset_id is not None:
-        if req.preset_id not in PRESET_IDS:
-            return _error(404, f"unknown preset_id: {req.preset_id[:64]!r}")
-        layout = req.preset_id
-    else:
-        verdict = validate_source(req.cobol_code or "")
-        if not verdict.accepted and verdict.error is not None:
-            err = verdict.error
-            return _error(
-                400,
-                {"error": "rejected", "token": err.token, "line": err.line,
-                 "message": err.message},
-            )
-        matched = _layout_for_schema(req.field_schema or [])
-        if matched is None:
-            return _error(
-                422,
-                "field_schema names must match the inputs of a supported layout "
-                "(loan_calc, compound_int or daily_ledger)",
-            )
-        layout = matched
-    return await run_in_threadpool(_verify_blocking, req, layout)
-
-
-_CALC_DEFAULT_THRESHOLD = Decimal("0.00")
-
-
-def _calc_value(raw: Any, f: Any) -> Decimal | int:
-    """Convert one request value to an exact Decimal/int for field ``f``.
-
-    Raises ValueError with a short reason (the caller names the field).
-    """
-    if isinstance(raw, bool) or not isinstance(raw, (str, int, Decimal)):
-        raise ValueError("must be a number or numeric string")
-    try:
-        value = Decimal(raw.strip()) if isinstance(raw, str) else Decimal(raw)
-    except InvalidOperation:
-        raise ValueError("is not a valid decimal number") from None
-    if not value.is_finite():
-        raise ValueError("must be finite")
-    lo = Decimal(f.lo).scaleb(-f.scale)
-    hi = Decimal(f.hi).scaleb(-f.scale)
-    if value < lo or value > hi:
-        raise ValueError(f"is out of range [{lo}, {hi}]")
-    if value != value.quantize(Decimal(1).scaleb(-f.scale)):
-        raise ValueError(f"must have at most {f.scale} decimal places")
-    if f.scale == 0:
-        return int(value)
-    return value.quantize(Decimal(1).scaleb(-f.scale))
-
-
-def _calculate_blocking(preset_id: str, inputs: dict[str, Decimal | int]) -> DecimalJSONResponse:
-    from . import reference_models
-    from .pbt_verifier import (
-        _DELTA_CONTEXT,
-        _OUTPUT_FIELDS,
-        _ZERO_DELTA,
-        Case,
-        _format_row,
-        _shared_runner,
-    )
-
-    fields = _fields(preset_id)
-    row = _format_row(Case(preset_id, inputs), fields)
-    out_names = _OUTPUT_FIELDS[preset_id]
-    try:
-        expected = reference_models.REGISTRY[preset_id](**inputs)
-    except Exception as exc:  # noqa: BLE001
-        return _error(500, {"error": "reference_model_failed",
-                            "message": f"{type(exc).__name__}: {exc}"[:300]})
-    run = _shared_runner().compile_and_run_preset(preset_id, [row])
-    if run.timed_out:
-        return _error(504, {"error": "run_timeout", "message": "COBOL run exceeded 5 seconds"})
-    if run.truncated or run.exit_code != 0:
-        return _error(500, {"error": "run_failed",
-                            "message": f"COBOL exited with code {run.exit_code}"})
-    lines = run.stdout.splitlines()
-    tokens = lines[0].split() if len(lines) == 1 else []
-    if len(tokens) != len(out_names):
-        return _error(500, {"error": "row_count_mismatch", "field": out_names[0],
-                            "message": "COBOL output did not match the Batch_Protocol"})
-    result: dict[str, str] = {}
-    for name, token in zip(out_names, tokens):
-        try:
-            cobol_val = Decimal(token)
-            delta = abs(_DELTA_CONTEXT.subtract(cobol_val, Decimal(expected[name])))
-        except (InvalidOperation, KeyError, TypeError):
-            return _error(500, {"error": "parity_mismatch", "field": name,
-                                "message": f"field {name} could not be compared"})
-        if not delta == _ZERO_DELTA:
-            return _error(500, {"error": "parity_mismatch", "field": name,
-                                "message": f"COBOL and Reference_Model differ in {name}"})
-        result[name] = format(Decimal(expected[name]), "f")
-    return DecimalJSONResponse(
-        {"preset_id": preset_id, "result": result, "raw_cobol_output": run.stdout}
-    )
-
-
-@app.post("/api/calculate", response_class=DecimalJSONResponse)
-async def calculate(request: Request) -> DecimalJSONResponse:
-    body = await request.body()
-    if len(body) > MAX_BODY_BYTES:
-        return _error(413, f"Request body exceeds {MAX_BODY_BYTES} bytes")
-    try:
-        data = json.loads(body, parse_float=Decimal, parse_constant=_reject_constant)
-    except (ValueError, RecursionError):
-        return _error(422, "request body is not valid JSON")
-    if not isinstance(data, dict):
-        return _error(422, "request body must be a JSON object")
-    preset_id = data.get("preset_id")
-    if not isinstance(preset_id, str):
-        return _error(422, {"field": "preset_id", "message": "preset_id is required"})
-    if preset_id not in PRESET_IDS:
-        return _error(404, f"unknown preset_id: {preset_id[:64]!r}")
-    raw_inputs = data.get("inputs", data)
-    if not isinstance(raw_inputs, dict):
-        return _error(422, {"field": "inputs", "message": "inputs must be an object"})
-
-    schema = _catalog()[preset_id]["input_schema"]
-    fields = {f.name: f for f in _fields(preset_id)}
-    inputs: dict[str, Decimal | int] = {}
-    for spec in schema:
-        name = spec["name"]
-        if name in raw_inputs:
-            raw = raw_inputs[name]
-        elif "default" in spec:
-            raw = spec["default"]
-        else:
-            return _error(422, {"field": name, "message": f"{name} is required"})
-        try:
-            inputs[name] = _calc_value(raw, fields[name])
-        except ValueError as exc:
-            return _error(422, {"field": name, "message": f"{name} {exc}"})
-    return await run_in_threadpool(_calculate_blocking, preset_id, inputs)
+def _preset_sources() -> dict[str, str]:
+    return {p["preset_id"]: p["cobol_source"] for p in load_presets()}
 
 
 @app.get("/api/presets", response_class=DecimalJSONResponse)
 def list_presets() -> DecimalJSONResponse:
-    return DecimalJSONResponse(load_presets())
-
-
-@app.get("/health")
-def health() -> dict:
-    available, version = _cobc_info()
-    return {"status": "ok", "cobc_available": available, "cobc_version": version}
+    return DecimalJSONResponse(
+        [
+            {"id": p["preset_id"], "title": p["name"], "cobol_code": p["cobol_source"]}
+            for p in load_presets()
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
-# Resurrection pipeline endpoints
+# Resurrection pipeline endpoint
 # ---------------------------------------------------------------------------
-
-RESURRECT_MIN_CASES = 150
-RESURRECT_MAX_CASES = 200
-_IDENTIFIER = r"^[A-Za-z_][A-Za-z0-9_]*$"
-_LLM_KEY_MESSAGE = (
-    "Custom COBOL conversion requires an LLM. Set LLM_API_KEY (and LLM_BASE_URL, "
-    "LLM_MODEL) on the server, or use one of the bundled presets, which need no key."
-)
-
-
-class FieldContractSpec(BaseModel):
-    """One caller-supplied field of a Custom_COBOL contract."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(min_length=1, max_length=64, pattern=_IDENTIFIER)
-    pic: str = Field(min_length=1, max_length=64)
-    direction: Literal["input", "output"]
-    scale: int | None = Field(default=None, ge=0, le=18, strict=True)
-    min: MoneyValue | None = None
-    max: MoneyValue | None = None
-    step: MoneyValue | None = None
-    label: str | None = Field(default=None, max_length=80)
-    rounding: Literal["ROUND_DOWN", "ROUND_HALF_UP"] | None = None
-
-    @model_validator(mode="after")
-    def _bounds(self) -> "FieldContractSpec":
-        if self.min is not None and self.max is not None and self.min > self.max:
-            raise ValueError("min must not exceed max")
-        if self.step is not None and self.step <= 0:
-            raise ValueError("step must be positive")
-        return self
-
 
 class ResurrectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     preset_id: str | None = None
     cobol_code: str | None = None
-    field_schema: list[FieldContractSpec] | None = Field(default=None, max_length=32)
     num_cases: int = Field(
         default=DEFAULT_NUM_CASES, ge=RESURRECT_MIN_CASES, le=RESURRECT_MAX_CASES, strict=True
     )
@@ -479,8 +196,6 @@ class ResurrectRequest(BaseModel):
     def _shape(self) -> "ResurrectRequest":
         if (self.preset_id is None) == (self.cobol_code is None):
             raise ValueError("supply exactly one of preset_id or cobol_code")
-        if self.cobol_code is not None and not self.field_schema:
-            raise ValueError("cobol_code requires a non-empty field_schema")
         return self
 
 
@@ -497,37 +212,29 @@ def _get_pipeline() -> Pipeline:
         return _PIPELINE
 
 
-def _unknown_preset_body() -> dict[str, Any]:
-    return {"error": "unknown_preset", "valid_ids": list(PRESET_IDS)}
-
-
-def _resurrect_blocking(
-    req: ResurrectRequest, schema: Any, layout: str | None
-) -> DecimalJSONResponse:
+def _resurrect_blocking(req: ResurrectRequest, cobol_code: str) -> DecimalJSONResponse:
     try:
         with _VERIFY_LOCK:
             response = _get_pipeline().run(
-                preset_id=req.preset_id,
-                cobol_source=req.cobol_code,
-                schema=schema,
+                cobol_code,
                 num_cases=req.num_cases,
                 demonstrate_self_healing=req.demonstrate_self_healing,
                 force_live_llm=req.force_live_llm,
-                layout=layout,
+                preset_id=req.preset_id,
             )
     except PipelineStageError as exc:
         return _error(exc.status, exc.body)
-    except (LLMKeyMissing, BudgetExceeded) as exc:
-        error = "llm_key_missing" if isinstance(exc, LLMKeyMissing) else "budget_exhausted"
-        return _error(503, {"error": error, "message": _LLM_KEY_MESSAGE})
+    except LLMUnavailable as exc:
+        return _error(
+            503,
+            {"error": "llm_unavailable", "cause": exc.cause,
+             "message": f"The LLM is unavailable: {exc}."},
+        )
     except LLMCallError as exc:
         return _error(
             502,
-            {
-                "error": "llm_call_failed",
-                "stage": exc.stage,
-                "message": f"The LLM call failed in stage {exc.stage}.",
-            },
+            {"error": "llm_call_failed", "stage": exc.stage,
+             "message": f"The LLM call failed in stage {exc.stage}."},
         )
     return DecimalJSONResponse(response.to_dict())
 
@@ -538,7 +245,7 @@ async def resurrect(request: Request) -> DecimalJSONResponse:
     if len(body) > RESURRECT_MAX_BODY_BYTES:  # chunked uploads carry no Content-Length
         return _error(413, f"Request body exceeds {RESURRECT_MAX_BODY_BYTES} bytes")
     try:
-        data = json.loads(body, parse_float=_JsonFloat, parse_constant=_reject_constant)
+        data = json.loads(body, parse_float=Decimal, parse_constant=_reject_constant)
     except (ValueError, RecursionError):
         return _error(422, "request body is not valid JSON")
     try:
@@ -552,67 +259,216 @@ async def resurrect(request: Request) -> DecimalJSONResponse:
             ],
         )
 
-    layout: str | None = None
     if req.preset_id is not None:
-        if req.preset_id not in PRESET_IDS:
-            return _error(404, _unknown_preset_body())
-        schema = contract_from_preset(req.preset_id)
+        sources = _preset_sources()
+        if req.preset_id not in sources:
+            return _error(404, {"error": "unknown_preset", "valid_ids": list(sources)})
+        cobol_code = sources[req.preset_id]
     else:
-        if req.demonstrate_self_healing:
-            return _error(
-                422,
-                {"error": "invalid_request", "message": "demonstration mode requires a preset_id"},
-            )
-        # Sandbox validation runs before any LLM call.
-        verdict = validate_source(req.cobol_code or "")
-        if not verdict.accepted and verdict.error is not None:
-            err = verdict.error
-            return _error(
-                400,
-                {"error": "rejected", "token": err.token, "line": err.line,
-                 "message": err.message},
-            )
-        specs = req.field_schema or []
-        inputs = [f for f in specs if f.direction == "input"]
-        outputs = sorted(f.name for f in specs if f.direction == "output")
-        layout = _layout_for_schema(inputs)  # type: ignore[arg-type]
-        if layout is None or outputs != sorted(_OUTPUT_FIELDS[layout]):
-            return _error(
-                422,
-                "field_schema input and output names must match a supported layout "
-                "(loan_calc, compound_int or daily_ledger)",
-            )
-        try:
-            schema = contract_from_field_schema(
-                [f.model_dump(exclude_none=True) for f in specs]
-            )
-        except (ValueError, TypeError) as exc:
-            return _error(422, {"error": "invalid_request", "message": str(exc)[:300]})
-    return await run_in_threadpool(_resurrect_blocking, req, schema, layout)
+        cobol_code = req.cobol_code or ""
+    return await run_in_threadpool(_resurrect_blocking, req, cobol_code)
 
 
-@app.get("/api/export/{preset_id}", response_class=DecimalJSONResponse)
-def export_preset(preset_id: str) -> DecimalJSONResponse:
-    """Verified Python and FastAPI starter code, served from the static bundle only."""
-    if preset_id not in PRESET_IDS:
-        return _error(404, _unknown_preset_body())
+# ---------------------------------------------------------------------------
+# Custom-program endpoints: calculate-custom and export-custom
+# ---------------------------------------------------------------------------
+
+_IO_PROTOCOLS = ("batch_space", "single_run_lines", "single_run_space", "no_input_static")
+
+
+class CalculateCustomRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cobol_code: StrictStr
+    python_code: StrictStr
+    schema_: dict[str, Any] = Field(alias="schema")
+    io_protocol: Literal["batch_space", "single_run_lines", "single_run_space", "no_input_static"]
+    inputs: dict[StrictStr, StrictStr]
+
+
+class ExportCustomRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    program_title: StrictStr | None = None
+    verified_python_code: StrictStr | None = None
+    python_code: StrictStr | None = None  # alias used by the frontend body
+    schema_: dict[str, Any] = Field(alias="schema")
+    cobol_code: StrictStr | None = None   # when given, certification is re-proved live
+    io_protocol: Literal[
+        "batch_space", "single_run_lines", "single_run_space", "no_input_static"
+    ] | None = None
+
+    @model_validator(mode="after")
+    def _code(self) -> "ExportCustomRequest":
+        if (self.verified_python_code or self.python_code) is None:
+            raise ValueError("supply verified_python_code")
+        return self
+
+
+async def _parse_body(request: Request, model: type[BaseModel]) -> BaseModel | DecimalJSONResponse:
+    body = await request.body()
+    if len(body) > RESURRECT_MAX_BODY_BYTES:
+        return _error(413, f"Request body exceeds {RESURRECT_MAX_BODY_BYTES} bytes")
     try:
-        entry = load_preset_bundles()[preset_id]["false"]
-        python_code = entry["verified_python_code"]
-        export_code = entry["export_fastapi_code"]
-    except (KeyError, TypeError):
-        return _error(404, {"error": "bundle_missing", "valid_ids": list(PRESET_IDS)})
+        data = json.loads(body, parse_float=Decimal, parse_constant=_reject_constant)
+    except (ValueError, RecursionError):
+        return _error(422, "request body is not valid JSON")
+    try:
+        return model.model_validate(data)
+    except ValidationError as exc:
+        return _error(
+            422,
+            [
+                {"loc": list(e["loc"]), "msg": e["msg"], "type": e["type"]}
+                for e in exc.errors(include_url=False, include_context=False, include_input=False)
+            ],
+        )
+
+
+def _source_rejection(cobol_code: str) -> DecimalJSONResponse | None:
+    verdict = validate_source(cobol_code)
+    if verdict.accepted:
+        return None
+    err = verdict.error
+    assert err is not None
+    return _error(
+        413 if err.token == "SOURCE-SIZE" else 400,
+        {"error": "rejected", "token": err.token, "line": err.line, "message": err.message},
+    )
+
+
+def _field_error(name: str, message: str) -> DecimalJSONResponse:
+    return _error(422, {"error": "invalid_input", "field": name, "message": message})
+
+
+def _calculate_blocking(req: CalculateCustomRequest) -> DecimalJSONResponse:
+    schema = req.schema_
+    in_defs = schema.get("inputs")
+    out_defs = schema.get("outputs")
+    if not isinstance(in_defs, list) or not isinstance(out_defs, list) or not out_defs:
+        return _error(422, {"error": "invalid_schema",
+                            "message": "schema needs an inputs list and a non-empty outputs list"})
+    if req.io_protocol != "no_input_static" and not in_defs:
+        return _error(422, {"error": "invalid_schema", "message": "schema has no inputs"})
+    try:
+        out_names = tuple(str(o["name"]) for o in out_defs)
+        fields = _contract_fields(schema)
+    except (KeyError, TypeError, ValueError):
+        return _error(422, {"error": "invalid_schema", "message": "malformed schema fields"})
+
+    known = {f.name for f in fields}
+    for name in req.inputs:
+        if name not in known:
+            return _field_error(name, "unknown input field")
+
+    units: dict[str, int] = {}
+    for f in fields:
+        raw = req.inputs.get(f.name)
+        if raw is None:
+            return _field_error(f.name, "missing input value")
+        try:
+            value = Decimal(raw.strip())
+        except (InvalidOperation, ValueError):
+            return _field_error(f.name, "must be a decimal string")
+        if not value.is_finite():
+            return _field_error(f.name, "must be a finite decimal")
+        scaled = value.scaleb(f.scale)
+        if scaled != scaled.to_integral_value():
+            return _field_error(f.name, f"has more than {f.scale} decimal places")
+        u = int(scaled)
+        if not f.lo <= u <= f.hi:
+            return _field_error(
+                f.name,
+                f"out of range {_fmt(_to_value(f.lo, f.scale))} to {_fmt(_to_value(f.hi, f.scale))}",
+            )
+        units[f.name] = u
+
+    case = Case("custom", {f.name: _to_value(units[f.name], f.scale) for f in fields})
+    runner = _shared_runner()
+    with _VERIFY_LOCK:
+        compiled = runner.get_binary(req.cobol_code)
+        if not compiled.success or compiled.binary_path is None:
+            return _error(400, {"error": "compile_failed",
+                                "message": (compiled.stderr or "compile failed").strip()[:2000]})
+        stdin_text = render_stdin(case, fields, req.io_protocol)
+        if req.io_protocol == "batch_space":
+            run = runner.run_batch(compiled.binary_path, [stdin_text])
+        else:
+            run = runner.run_single(compiled.binary_path, stdin_text)
+        try:
+            _check_run(run)
+        except VerificationError as exc:
+            return _error(502, {"error": exc.kind, "message": exc.message})
+        py = run_user_python(req.python_code, [case])[0]
+
+    if py.outputs is None:
+        return _error(422, {"error": "python_error", "message": (py.error or "python failed")[:300]})
+
+    tokens = parse_outputs(run.stdout, len(out_names), req.io_protocol)
+    line = " ".join(tokens) if tokens is not None else ""
+    inputs_text = {k: _fmt(v) for k, v in case.inputs.items()}
+    mismatch = _compare_case(case, inputs_text, out_names, line, py.outputs, None, False)
     return DecimalJSONResponse(
         {
-            "preset_id": preset_id,
-            "verified_python_code": python_code,
-            "export_fastapi_code": export_code,
-            "certified": True,
-            "parity_certificate": {
-                "certified": True,
-                "parity_score_pct": "100.00",
-                "method": "differential property-based testing against GnuCOBOL",
-                "note": "Bundled result. POST /api/resurrect re-runs the live GnuCOBOL comparison.",
-            },
+            "result": {n: _fmt(py.outputs[n]) for n in out_names if n in py.outputs},
+            "raw_cobol_output": run.stdout,
+            "parity_verified": mismatch is None,
         }
     )
+
+
+@app.post("/api/calculate-custom", response_class=DecimalJSONResponse)
+async def calculate_custom(request: Request) -> DecimalJSONResponse:
+    req = await _parse_body(request, CalculateCustomRequest)
+    if isinstance(req, DecimalJSONResponse):
+        return req
+    rejection = _source_rejection(req.cobol_code)
+    if rejection is not None:
+        return rejection
+    return await run_in_threadpool(_calculate_blocking, req)
+
+
+def _slug(title: str | None) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", (title or "").lower()).strip("_")[:60]
+    return slug or "verified_program"
+
+
+def _export_blocking(req: ExportCustomRequest) -> DecimalJSONResponse:
+    code = req.verified_python_code or req.python_code or ""
+    try:
+        contract = normalize_contract(req.schema_)
+        schema = schema_from_contract(contract)
+        module = render_export(code, schema)
+    except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
+        return _error(422, {"error": "invalid_export", "message": str(exc)[:300]})
+
+    certified = False
+    if req.cobol_code is not None and req.io_protocol is not None:
+        try:
+            with _VERIFY_LOCK:
+                report = run_universal_verification(
+                    req.cobol_code, contract, req.io_protocol, code, runner=_shared_runner()
+                )
+            certified = report.verified
+        except VerificationError:
+            certified = False
+    return DecimalJSONResponse(
+        {
+            "filename": f"{_slug(req.program_title)}_api.py",
+            "verified_python_code": code,
+            "export_fastapi_code": module,
+            "certified": certified,
+        }
+    )
+
+
+@app.post("/api/export-custom", response_class=DecimalJSONResponse)
+async def export_custom(request: Request) -> DecimalJSONResponse:
+    req = await _parse_body(request, ExportCustomRequest)
+    if isinstance(req, DecimalJSONResponse):
+        return req
+    if req.cobol_code is not None:
+        rejection = _source_rejection(req.cobol_code)
+        if rejection is not None:
+            return rejection
+    return await run_in_threadpool(_export_blocking, req)

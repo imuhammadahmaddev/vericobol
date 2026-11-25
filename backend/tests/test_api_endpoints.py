@@ -1,10 +1,7 @@
-"""Integration tests for the FastAPI endpoints (Task 9.8).
+"""Integration tests for /health, CORS, /api/presets and removed endpoints.
 
-Covers /health, /api/presets, /api/verify and /api/calculate through
-FastAPI's TestClient, against the real GnuCOBOL compiler.
-
-Requirements: 14.1, 14.3, 14.4, 15.2, 15.3, 16.1, 16.4, 17.14, 17.15,
-18.1, 18.2, 18.6.
+Runs through FastAPI's TestClient. The resurrect pipeline itself is covered by
+test_resurrect_api.py and test_resurrection_pipeline.py.
 """
 
 from __future__ import annotations
@@ -12,8 +9,6 @@ from __future__ import annotations
 import importlib.util
 import os
 import subprocess
-import time
-from decimal import Decimal
 from pathlib import Path
 
 os.environ["VERICOBOL_SKIP_WARMUP"] = "1"
@@ -22,19 +17,9 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import main  # noqa: E402
-from app.cobol_runner import CobolRunner  # noqa: E402
 
 PRESET_IDS = ("loan_calc", "compound_int", "daily_ledger")
-OUTPUT_FIELDS = {
-    "loan_calc": ("monthly_payment", "total_interest", "total_payable"),
-    "compound_int": ("maturity_amount", "accrued_interest"),
-    "daily_ledger": ("closing_balance", "fee_applied", "overdraft_flag"),
-}
-LOAN_SCHEMA = [
-    {"name": "principal", "min": "0.01", "max": "10000000.00", "step": "100.00"},
-    {"name": "annual_rate_pct", "min": "0.000", "max": "100.000", "step": "0.001"},
-    {"name": "term_months", "min": "1", "max": "360", "step": "1"},
-]
+SAMPLES_DIR = Path(__file__).resolve().parent.parent / "cobol_samples"
 MAIN_PATH = Path(main.__file__)
 
 
@@ -53,7 +38,7 @@ def _fresh_cobc_cache():
 
 @pytest.fixture(scope="module")
 def presets(client):
-    return {p["preset_id"]: p for p in client.get("/api/presets").json()}
+    return {p["id"]: p for p in client.get("/api/presets").json()}
 
 
 # ---------------------------------------------------------------- /health
@@ -71,7 +56,8 @@ def test_health_shape_and_single_cobc_call(client, monkeypatch):
     for r in bodies:
         assert r.status_code == 200
         body = r.json()
-        assert set(body) == {"status", "cobc_available", "cobc_version"}
+        assert set(body) == {"status", "cobc_available", "cobc_version", "llm_configured"}
+        assert isinstance(body["llm_configured"], bool)
         assert body["status"] == "ok"
         assert body["cobc_available"] is True
         assert isinstance(body["cobc_version"], str) and body["cobc_version"]
@@ -85,7 +71,9 @@ def test_health_missing_cobc(client, monkeypatch):
     main._cobc_info.cache_clear()
     r = client.get("/health")
     assert r.status_code == 200
-    assert r.json() == {"status": "ok", "cobc_available": False, "cobc_version": ""}
+    body = r.json()
+    assert body["cobc_available"] is False and body["cobc_version"] == ""
+    assert body["status"] == "ok"
 
 
 # ------------------------------------------------------------------- CORS
@@ -102,14 +90,14 @@ def test_cors_allowed_and_disallowed_origin(client):
 def test_cors_preflight(client):
     allowed = main._frontend_origin()
     ok = client.options(
-        "/api/verify",
+        "/api/resurrect",
         headers={"Origin": allowed, "Access-Control-Request-Method": "POST",
                  "Access-Control-Request-Headers": "Content-Type"},
     )
     assert ok.status_code == 200
     assert ok.headers.get("access-control-allow-origin") == allowed
     bad = client.options(
-        "/api/verify",
+        "/api/resurrect",
         headers={"Origin": "https://evil.example.com",
                  "Access-Control-Request-Method": "POST"},
     )
@@ -145,16 +133,12 @@ def test_cors_default_origin_when_unset(monkeypatch):
 
 # ----------------------------------------------------------- /api/presets
 
-def test_presets_shape(presets):
+def test_presets_return_id_title_and_raw_cobol_only(presets):
     assert tuple(presets) == PRESET_IDS
     for pid, p in presets.items():
-        assert {"preset_id", "name", "description", "cobol_source",
-                "input_schema", "sample_input"} <= set(p)
-        assert p["cobol_source"].strip()
-        assert p["input_schema"]
-        assert set(p["sample_input"]) == {f["name"] for f in p["input_schema"]}
-        for v in p["sample_input"].values():
-            assert isinstance(v, str)
+        assert set(p) == {"id", "title", "cobol_code"}
+        assert p["title"].strip()
+        assert p["cobol_code"] == (SAMPLES_DIR / f"{pid}.cbl").read_text(encoding="utf-8")
 
 
 def test_presets_read_once_cached(client, monkeypatch):
@@ -171,135 +155,17 @@ def test_presets_read_once_cached(client, monkeypatch):
     assert r1.text == r2.text
 
 
-# ------------------------------------------------------------ /api/verify
+# ------------------------------------------------------- removed endpoints
 
-@pytest.mark.parametrize("preset_id", PRESET_IDS)
-def test_verify_happy_path(client, preset_id):
-    r = client.post("/api/verify", json={"preset_id": preset_id})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["total_cases"] == 150
-    assert body["passed_cases"] == 150
-    assert body["failed_cases"] == 0
-    assert body["parity_score_pct"] == "100.00"
-    assert body["verified"] is True
-    assert body["counterexamples"] == []
-    assert body["raw_cobol_sample_output"]
+@pytest.mark.parametrize("path", ["/api/verify", "/api/calculate", "/api/export/loan_calc"])
+def test_preset_only_endpoints_are_gone(client, path):
+    assert client.post(path, json={"preset_id": "loan_calc"}).status_code in (404, 405)
+    assert client.get(path).status_code in (404, 405)
 
 
-@pytest.mark.parametrize("preset_id", PRESET_IDS)
-def test_verify_float_bug_flag_fails_cases(client, preset_id):
-    r = client.post(
-        "/api/verify", json={"preset_id": preset_id, "simulate_float_bug": True}
-    )
-    assert r.status_code == 200
-    body = r.json()
-    assert body["failed_cases"] > 0
-    assert body["verified"] is False
-    assert body["counterexamples"]
-    assert body["passed_cases"] + body["failed_cases"] == body["total_cases"]
+# ------------------------------------------------------------ body limits
 
-
-def test_verify_repeated_calls_run_live_each_time(client, monkeypatch):
-    real = CobolRunner.run_batch
-    runs: list[int] = []
-
-    def spy(self, binary_path, input_rows):
-        runs.append(len(input_rows))
-        return real(self, binary_path, input_rows)
-
-    monkeypatch.setattr(CobolRunner, "run_batch", spy)
-    payload = {"preset_id": "loan_calc"}
-    r1 = client.post("/api/verify", json=payload)
-    r2 = client.post("/api/verify", json=payload)
-    assert r1.status_code == r2.status_code == 200
-    assert len(runs) == 2
-    assert all(n == 150 for n in runs)
-    assert r1.json()["verified"] is True and r2.json()["verified"] is True
-
-
-def test_verify_body_over_128kb_is_413(client):
+def test_body_over_128kb_is_413_on_small_endpoints(client):
     big = "A" * (128 * 1024 + 10)
-    r = client.post("/api/verify", content=big,
-                    headers={"Content-Type": "application/json"})
+    r = client.post("/api/presets", content=big, headers={"Content-Type": "application/json"})
     assert r.status_code == 413
-    r2 = client.post("/api/calculate", content=big,
-                     headers={"Content-Type": "application/json"})
-    assert r2.status_code == 413
-
-
-def test_verify_validator_rejection_400_with_token_and_line(client):
-    source = (
-        "       IDENTIFICATION DIVISION.\n"
-        "       PROGRAM-ID. EVIL.\n"
-        "       PROCEDURE DIVISION.\n"
-        '           CALL "SYSTEM" USING "echo hi".\n'
-        "           STOP RUN.\n"
-    )
-    r = client.post("/api/verify", json={
-        "cobol_code": source,
-        "python_code": "def f(**kw):\n    return {}\n",
-        "field_schema": LOAN_SCHEMA,
-    })
-    assert r.status_code == 400
-    detail = r.json()["detail"]
-    assert detail["error"] == "rejected"
-    assert isinstance(detail["token"], str) and detail["token"]
-    assert detail["line"] == 4
-    assert detail["message"]
-
-
-def test_verify_bad_requests(client):
-    assert client.post("/api/verify", json={}).status_code == 422
-    assert client.post("/api/verify", json={"preset_id": "nope"}).status_code == 404
-    assert client.post("/api/verify", content="{not json").status_code == 422
-
-
-# --------------------------------------------------------- /api/calculate
-
-@pytest.mark.parametrize("preset_id", PRESET_IDS)
-def test_calculate_happy_path(client, presets, preset_id):
-    inputs = presets[preset_id]["sample_input"]
-    r = client.post("/api/calculate", json={"preset_id": preset_id, "inputs": inputs})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["preset_id"] == preset_id
-    assert set(body["result"]) == set(OUTPUT_FIELDS[preset_id])
-    for name, value in body["result"].items():
-        assert isinstance(value, str)
-        Decimal(value)  # exact decimal text
-    assert body["raw_cobol_output"].strip()
-
-
-def test_calculate_known_values(client):
-    r = client.post("/api/calculate", json={
-        "preset_id": "daily_ledger",
-        "inputs": {"opening_balance": "1000.00", "deposits": "250.50",
-                   "withdrawals": "1500.75", "overdraft_fee": "35.00"},
-    })
-    assert r.status_code == 200
-    res = r.json()["result"]
-    assert Decimal(res["closing_balance"]) == Decimal("-250.25") - Decimal("35.00")
-    assert Decimal(res["fee_applied"]) == Decimal("35.00")
-
-
-@pytest.mark.parametrize("preset_id", PRESET_IDS)
-def test_calculate_under_1_5_seconds(client, presets, preset_id):
-    inputs = presets[preset_id]["sample_input"]
-    payload = {"preset_id": preset_id, "inputs": inputs}
-    assert client.post("/api/calculate", json=payload).status_code == 200  # warm
-    start = time.perf_counter()
-    r = client.post("/api/calculate", json=payload)
-    elapsed = time.perf_counter() - start
-    assert r.status_code == 200
-    assert elapsed < 1.5
-
-
-def test_calculate_rejects_bad_input(client):
-    assert client.post("/api/calculate", json={"preset_id": "nope"}).status_code == 404
-    r = client.post("/api/calculate", json={
-        "preset_id": "loan_calc",
-        "inputs": {"principal": "abc", "annual_rate_pct": "5", "term_months": "12"},
-    })
-    assert r.status_code == 422
-    assert r.json()["detail"]["field"] == "principal"

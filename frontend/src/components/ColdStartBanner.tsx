@@ -1,6 +1,7 @@
 export const COLD_START_TEXT =
-  "ESTABLISHING 3270 MAINFRAME CONNECTION... WARMING UP GNUCOBOL 3.2.0 COMPILER...";
+  "ESTABLISHING 3270 MAINFRAME CONNECTION... WARMING UP GNUCOBOL COMPILER...";
 
+/** Themed warm-up status. Render it only until `/health` succeeds. */
 export default function ColdStartBanner() {
   return (
     <div

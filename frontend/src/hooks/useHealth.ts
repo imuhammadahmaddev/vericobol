@@ -6,6 +6,13 @@ import type { HealthResponse } from "@/lib/types";
 
 export const HEALTH_RETRY_MS = 3000;
 
+/** "cobc (GnuCOBOL) 3.2.0" -> "GnuCOBOL 3.2.0 Online". */
+export function formatHealthLabel(cobcVersion: string, cobcAvailable = true): string {
+  if (!cobcAvailable) return "GnuCOBOL Unavailable";
+  const m = /GnuCOBOL\)?\s*(\d+(?:\.\d+)*)/i.exec(cobcVersion);
+  return m ? `GnuCOBOL ${m[1]} Online` : "GnuCOBOL Online";
+}
+
 /** connecting: no successful response yet. online: ok + cobc. degraded: ok but cobc missing. */
 export type HealthState = "connecting" | "online" | "degraded";
 
@@ -14,6 +21,8 @@ export interface UseHealthResult {
   health: HealthResponse | null;
   /** Number of failed or non-ok attempts so far (for long-wait messaging). */
   attempts: number;
+  /** Pill text, e.g. "GnuCOBOL 3.2.0 Online"; empty until connected. */
+  label: string;
 }
 
 export function useHealth(): UseHealthResult {
@@ -51,5 +60,6 @@ export function useHealth(): UseHealthResult {
   }, []);
 
   const state: HealthState = health === null ? "connecting" : health.cobc_available ? "online" : "degraded";
-  return { state, health, attempts };
+  const label = health ? formatHealthLabel(health.cobc_version, health.cobc_available) : "";
+  return { state, health, attempts, label };
 }

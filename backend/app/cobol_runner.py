@@ -7,6 +7,7 @@ subprocess and never touches the file system.
 from __future__ import annotations
 
 import atexit
+import hashlib
 import os
 import re
 import shutil
@@ -15,6 +16,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -60,11 +62,7 @@ _RULES: tuple[tuple[str | None, re.Pattern[str], str], ...] = tuple(
     for label, pattern, why in (
         ("CALL", _kw("CALL"), "arbitrary program invocation"),
         ("SYSTEM", _kw("SYSTEM"), "shell escape"),
-        (
-            "OPEN OUTPUT/EXTEND/I-O",
-            _kw("OPEN") + r"[^.]*?" + _NB + r"(?:OUTPUT|EXTEND|I-O)" + _NA,
-            "writable file I/O",
-        ),
+        ("OPEN", _kw("OPEN"), "file I/O"),
         (
             "SELECT ... ASSIGN",
             _kw("SELECT") + r"[^.]*?" + _kw("ASSIGN"),
@@ -112,6 +110,9 @@ def _clean_line(line: str) -> str:
     an operator, while the quotes stay so tokens remain separated.
     """
     if line[:1] in ("*", "/"):
+        return ""
+    # Fixed-format comment/page-eject indicator in column 7.
+    if len(line) > 6 and line[6] in ("*", "/") and "\t" not in line[:7]:
         return ""
     out: list[str] = []
     quote = ""
@@ -221,6 +222,15 @@ class CompileResult:
     stderr: str
     duration_ms: float  # float-ok: timing
     timed_out: bool = False
+    source_format: str | None = None  # "free" or "fixed" when compiled
+
+    @property
+    def ok(self) -> bool:
+        return self.success
+
+    @property
+    def diagnostics(self) -> str:
+        return self.stderr
 
 
 @dataclass(frozen=True)
@@ -345,9 +355,77 @@ def _text(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+BINARY_CACHE_MAX_ENTRIES = 16
+
+
+class BinaryCache:
+    """Thread-safe LRU of compiled binaries keyed on SHA-256 of the COBOL source.
+
+    Each entry owns a directory from ``tempfile.mkdtemp`` because binaries
+    outlive one request. Eviction and shutdown delete the directory.
+    """
+
+    def __init__(self, max_entries: int = BINARY_CACHE_MAX_ENTRIES):
+        self.max_entries = max_entries
+        self._lock = threading.Lock()
+        self._entries: OrderedDict[str, tuple[Path, CompileResult]] = OrderedDict()
+        atexit.register(self.clear)
+
+    @staticmethod
+    def key_for(source: str) -> str:
+        return hashlib.sha256(source.encode("utf-8", errors="replace")).hexdigest()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+    def __contains__(self, source: str) -> bool:
+        with self._lock:
+            return self.key_for(source) in self._entries
+
+    def get(self, source: str) -> CompileResult | None:
+        key = self.key_for(source)
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            if entry[1].binary_path is None or not entry[1].binary_path.exists():
+                self._entries.pop(key, None)
+                shutil.rmtree(entry[0], ignore_errors=True)
+                return None
+            self._entries.move_to_end(key)
+            return entry[1]
+
+    def new_dir(self) -> Path:
+        return Path(tempfile.mkdtemp(prefix="vericobol_bin_"))
+
+    def put(self, source: str, directory: Path, result: CompileResult) -> None:
+        key = self.key_for(source)
+        evicted: list[Path] = []
+        with self._lock:
+            old = self._entries.pop(key, None)
+            if old is not None and old[0] != directory:
+                evicted.append(old[0])
+            self._entries[key] = (directory, result)
+            while len(self._entries) > self.max_entries:
+                _k, (d, _r) = self._entries.popitem(last=False)
+                evicted.append(d)
+        for d in evicted:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def clear(self) -> None:
+        with self._lock:
+            dirs = [d for d, _r in self._entries.values()]
+            self._entries.clear()
+        for d in dirs:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class CobolRunner:
     def __init__(self, cobc_path: str | None = None):
         self.cobc_path = cobc_path or os.environ.get("COBC_PATH") or "cobc"
+        self.binary_cache = BinaryCache()
+        self._compile_lock = threading.Lock()
         self._preset_lock = threading.Lock()
         self._preset_binaries: dict[str, Path] = {}
         self._preset_dir: Path | None = None
@@ -358,30 +436,91 @@ class CobolRunner:
         sandbox_dir = Path(sandbox_dir)
         src_path = sandbox_dir / "program.cbl"
         src_path.write_text(source, encoding="utf-8", newline="\n")
-        args = [self.cobc_path, "-x", "-free", "-o", "program", "program.cbl"]
         start = time.perf_counter()
-        try:
-            code, out, err, _tr, timed_out, ms = _execute(
-                args,
-                cwd=sandbox_dir,
-                stdin_data=b"",
-                timeout=SUBPROCESS_TIMEOUT_S,
-                max_stdout=MAX_STDERR_BYTES,
-                max_stderr=MAX_STDERR_BYTES,
-            )
-        except FileNotFoundError:
+        last: CompileResult | None = None
+        # Free format first; one fallback to fixed format on a failed compile.
+        for fmt, flags in (("free", ["-x", "-free"]), ("fixed", ["-x"])):
+            args = [self.cobc_path, *flags, "-o", "program", "program.cbl"]
+            try:
+                code, out, err, _tr, timed_out, _ms = _execute(
+                    args,
+                    cwd=sandbox_dir,
+                    stdin_data=b"",
+                    timeout=SUBPROCESS_TIMEOUT_S,
+                    max_stdout=MAX_STDERR_BYTES,
+                    max_stderr=MAX_STDERR_BYTES,
+                )
+            except FileNotFoundError:
+                ms = (time.perf_counter() - start) * 1000.0  # float-ok: timing ms
+                return CompileResult(
+                    False, None, "", f"cobc executable not found: {self.cobc_path}", ms
+                )
             ms = (time.perf_counter() - start) * 1000.0  # float-ok: timing ms
-            return CompileResult(
-                False, None, "", f"cobc executable not found: {self.cobc_path}", ms
+            binary = sandbox_dir / "program"
+            if os.name == "nt" and not binary.exists():
+                binary = sandbox_dir / "program.exe"
+            ok = (not timed_out) and code == 0 and binary.exists()
+            stderr = _text(err)
+            if timed_out:
+                stderr += "\ncobc timed out after 5 s"
+            last = CompileResult(
+                ok, binary if ok else None, _text(out), stderr, ms, timed_out,
+                fmt if ok else None,
             )
-        binary = sandbox_dir / "program"
-        if os.name == "nt" and not binary.exists():
-            binary = sandbox_dir / "program.exe"
-        ok = (not timed_out) and code == 0 and binary.exists()
-        stderr = _text(err)
-        if timed_out:
-            stderr += "\ncobc timed out after 5 s"
-        return CompileResult(ok, binary if ok else None, _text(out), stderr, ms, timed_out)
+            if ok or timed_out:
+                return last
+        assert last is not None
+        return last
+
+    # -- binary cache ----------------------------------------------------
+    def get_binary(self, source: str) -> CompileResult:
+        """Return a compiled binary for ``source``, compiling at most once per source.
+
+        The source is re-validated here as defense in depth. Only successful
+        compiles are cached. The returned ``binary_path`` stays valid until the
+        entry is evicted.
+        """
+        verdict = validate_source(source)
+        if not verdict.accepted:
+            msg = verdict.error.message if verdict.error else "Source rejected"
+            return CompileResult(False, None, "", msg, 0.0)  # float-ok: timing placeholder
+        hit = self.binary_cache.get(source)
+        if hit is not None:
+            return hit
+        with self._compile_lock:
+            hit = self.binary_cache.get(source)
+            if hit is not None:
+                return hit
+            directory = self.binary_cache.new_dir()
+            keep = False
+            try:
+                result = self.compile_source(source, directory)
+                if result.success and result.binary_path is not None:
+                    self.binary_cache.put(source, directory, result)
+                    keep = True
+                    return result
+                return CompileResult(
+                    False, None, result.stdout, result.stderr, result.duration_ms,
+                    result.timed_out, None,
+                )
+            finally:
+                if not keep:
+                    shutil.rmtree(directory, ignore_errors=True)
+
+    def run_single(self, binary_path: Path, stdin_text: str) -> RunResult:
+        binary_path = Path(binary_path)
+        payload = stdin_text.encode("utf-8")
+        if payload and not payload.endswith(b"\n"):
+            payload += b"\n"
+        code, out, err, truncated, timed_out, ms = _execute(
+            [str(binary_path)],
+            cwd=binary_path.parent,
+            stdin_data=payload,
+            timeout=SUBPROCESS_TIMEOUT_S,
+            max_stdout=MAX_STDOUT_BYTES,
+            max_stderr=MAX_STDERR_BYTES,
+        )
+        return RunResult(code, _text(out), _text(err), truncated, timed_out, ms)
 
     # -- run -------------------------------------------------------------
     def run_batch(self, binary_path: Path, input_rows: list[str]) -> RunResult:
@@ -449,6 +588,7 @@ class CobolRunner:
                     compiled.stderr,
                     compiled.duration_ms,
                     compiled.timed_out,
+                    compiled.source_format,
                 ),
                 run,
             )

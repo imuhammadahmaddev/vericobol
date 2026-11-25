@@ -78,6 +78,10 @@ TOOLS: list[dict[str, Any]] = [
                         "required": ["name", "direction"],
                     },
                 },
+                "python_code": {
+                    "type": "string",
+                    "description": "Decimal Python `calculate(**inputs)` to verify against the COBOL.",
+                },
                 "num_cases": {"type": "integer", "minimum": 150, "maximum": 200},
             },
             "additionalProperties": False,
@@ -198,9 +202,12 @@ def tool_verify_parity(args: dict[str, Any]) -> dict[str, Any]:
                 )
     elif preset_id is None:
         return _error_result("preset_id or cobol_code is required")
+    python_code = args.get("python_code")
+    if not isinstance(python_code, str) or not python_code.strip():
+        return _error_result("python_code is required")
     try:
         report = pbt_verifier.run_verification(
-            preset_id, cobol_code, num_cases=num_cases
+            preset_id, cobol_code, num_cases=num_cases, python_code=python_code
         )
     except pbt_verifier.VerificationError as exc:
         return _error_result(exc.message, kind=exc.kind, rejected=exc.kind == "rejected")

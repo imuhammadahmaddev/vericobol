@@ -97,15 +97,38 @@ def _entry_name(code: str) -> str:
     )
 
 
+def _assert_float_free(module_source: str) -> None:
+    """Raise ``ValueError`` if the module uses ``float``, a float literal or ``math.pow``."""
+    try:
+        tree = ast.parse(module_source)
+    except SyntaxError as exc:
+        raise ValueError(f"rendered module is not valid Python: {exc}") from None
+    for node in ast.walk(tree):
+        line = getattr(node, "lineno", "?")
+        if isinstance(node, ast.Name) and node.id == "float":
+            raise ValueError(f"rendered module uses the float type (line {line})")
+        if isinstance(node, ast.Constant) and isinstance(node.value, float):
+            raise ValueError(f"rendered module contains a float literal (line {line})")
+        if isinstance(node, ast.Attribute) and node.attr == "pow":
+            if isinstance(node.value, ast.Name) and node.value.id == "math":
+                raise ValueError(f"rendered module uses math.pow (line {line})")
+        if isinstance(node, ast.ImportFrom) and node.module == "math":
+            if any(alias.name == "pow" for alias in node.names):
+                raise ValueError(f"rendered module imports math.pow (line {line})")
+
+
 def render(verified_python_code: str, schema: "ContractSchema") -> str:
     """Return the source of a self-contained FastAPI module.
 
-    ``verified_python_code`` is embedded verbatim. The caller guarantees it is
-    free of binary floating point (the pipeline scans for this upstream).
+    ``verified_python_code`` is embedded verbatim. After rendering, an ``ast``
+    check raises ``ValueError`` if the module contains a ``float`` name, a float
+    literal or ``math.pow``.
     """
     entry = _entry_name(verified_python_code)
     inputs = tuple((f.name, f.scale) for f in schema.input_fields)
     outputs = tuple(f.name for f in schema.output_fields)
     code = verified_python_code if verified_python_code.endswith("\n") else verified_python_code + "\n"
     route = _ROUTE.format(entry=entry, inputs=repr(inputs), outputs=repr(outputs))
-    return _PREAMBLE + code + route
+    module = _PREAMBLE + code + route
+    _assert_float_free(module)
+    return module

@@ -20,7 +20,79 @@ export interface HealthResponse {
   cobc_available: boolean;
   /** Always a string, possibly "". */
   cobc_version: string;
+  /** True when LLM_API_KEY is configured on the backend. */
+  llm_configured?: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Universal platform contract (inferred by the Legacy_Parser)
+// ---------------------------------------------------------------------------
+
+export type IoProtocol =
+  | "batch_space"
+  | "single_run_lines"
+  | "single_run_space"
+  | "no_input_static";
+
+export type OutputFormat = "currency" | "percent" | "integer" | "decimal" | "flag" | "text";
+export type ChartType = "bar_comparison" | "breakdown" | "waterfall" | "summary";
+
+export interface ContractInputField {
+  name: string;
+  label: string;
+  pic: string;
+  scale: number;
+  min: MoneyString;
+  max: MoneyString;
+  step: MoneyString;
+}
+
+export interface ContractOutputField {
+  name: string;
+  label: string;
+  pic: string;
+  scale: number;
+  rounding: "truncate" | "rounded";
+  format: OutputFormat;
+}
+
+export interface ContractSchema {
+  inputs: ContractInputField[];
+  outputs: ContractOutputField[];
+}
+
+/** Everything /api/calculate-custom needs to re-run one input set. */
+export interface CalculateCustomRequestBody {
+  cobol_code: string;
+  python_code: string;
+  schema: ContractSchema;
+  io_protocol: IoProtocol;
+  /** Decimal strings only. */
+  inputs: Record<string, MoneyString>;
+}
+
+export interface CalculateCustomResponse {
+  result: Record<string, MoneyString>;
+  raw_cobol_output: string;
+  parity_verified: boolean;
+}
+
+export interface ExportCustomRequestBody {
+  cobol_code: string;
+  python_code: string;
+  schema: ContractSchema;
+  io_protocol: IoProtocol;
+}
+
+export interface ExportCustomResponse {
+  filename: string;
+  verified_python_code: string;
+  export_fastapi_code: string;
+  certified: boolean;
+}
+
+/** UI progress of one pipeline stage while POST /api/resurrect is in flight. */
+export type StageProgress = "pending" | "running" | "done" | "failed";
 
 // ---------------------------------------------------------------------------
 // GET /api/presets
@@ -34,6 +106,13 @@ export interface PresetInputField {
   step: MoneyString;
   /** Present only for some fields (e.g. overdraft_threshold). */
   default?: MoneyString;
+}
+
+/** One starter template from GET /api/presets: raw COBOL text only. */
+export interface StarterTemplate {
+  id: string;
+  title: string;
+  cobol_code: string;
 }
 
 export interface PresetSummary {
@@ -127,7 +206,7 @@ export type VerifyResponse = ParityReport;
 
 export type StageName = "legacy_parser" | "cloud_architect" | "parity_auditor";
 export type StageStatus = "ok" | "failed" | "skipped";
-export type StageSource = "llm" | "cache" | "deterministic";
+export type StageSource = "llm" | "cache" | "live" | "deterministic";
 
 export interface StageRecord {
   name: StageName;
@@ -173,7 +252,7 @@ export interface DashboardInputMeta {
 export interface DashboardOutputMeta {
   name: string;
   label: string;
-  format: "currency" | "integer" | "decimal" | "flag" | "percent";
+  format: OutputFormat;
 }
 
 export interface DashboardMetadata {
@@ -221,6 +300,12 @@ export interface ResurrectResponse {
   export_fastapi_code: string;
   audit_trail: AttemptRecord[];
   final_report: FinalReport;
+  /** Universal platform fields (absent on older responses). */
+  program_title?: string;
+  description?: string;
+  io_protocol?: IoProtocol;
+  contract?: ContractSchema;
+  certified?: boolean;
 }
 
 // ---------------------------------------------------------------------------

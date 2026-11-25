@@ -145,7 +145,14 @@ def test_compile_and_run_happy_path(client: McpClient) -> None:
 
 
 def test_verify_parity_loan_calc(client: McpClient) -> None:
-    result = client.call("verify_cobol_parity", {"preset_id": "loan_calc", "num_cases": 150})
+    bundles = json.loads(
+        (BACKEND_DIR / "cobol_samples" / "preset_bundles.json").read_text(encoding="utf-8"))
+    code = bundles["loan_calc"]["false"]["verified_python_code"]  # Test_Oracle use only
+    no_code = client.call("verify_cobol_parity", {"preset_id": "loan_calc"})
+    assert no_code["isError"] is True
+    result = client.call(
+        "verify_cobol_parity",
+        {"preset_id": "loan_calc", "num_cases": 150, "python_code": code})
     assert not result.get("isError")
     report = payload(result)
     assert report["verified"] is True

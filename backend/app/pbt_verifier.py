@@ -365,8 +365,13 @@ def generate_cases(preset_id: str, num_cases: int, seed: int | None = None) -> l
 
 import ast
 import os
-import resource
 import multiprocessing
+import re
+
+try:  # POSIX only; absent on Windows hosts (verification then runs in Docker/Linux)
+    import resource
+except ImportError:  # pragma: no cover - platform dependent
+    resource = None  # type: ignore[assignment]
 import time
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Context, InvalidOperation
 from typing import Any, Callable
@@ -428,11 +433,14 @@ def check_user_code_ast(tree: ast.AST) -> None:
             raise RestrictedCodeError(f"line {line}: call to {node.func.id!r} is not allowed")
 
 
-def load_restricted_function(python_code: str) -> Callable[..., dict[str, Any]]:
+def load_restricted_function(python_code: str, allow_float_demo: bool = False
+                             ) -> Callable[..., dict[str, Any]]:
     """AST-check, compile and exec ``python_code``; return its entry function.
 
     Runs in the calling process. ``run_user_python`` calls this inside a
     disposable child; call it directly only for trusted code or tests.
+    With ``allow_float_demo`` the ``float`` and ``pow`` builtins are exposed so
+    a deliberately naive IEEE-754 translation can run (Float_Demo_Attempt).
     """
     if not isinstance(python_code, str) or len(python_code) > MAX_PYTHON_CODE_CHARS:
         raise RestrictedCodeError("python_code missing or too large")
@@ -449,6 +457,8 @@ def load_restricted_function(python_code: str) -> Callable[..., dict[str, Any]]:
         "Context": _FIXED_CONTEXT,
         "__builtins__": dict(_SAFE_BUILTINS),
     }
+    if allow_float_demo:
+        namespace["__builtins__"].update({"float": float, "pow": pow})  # float-ok: demo only
     exec(code_obj, namespace)  # noqa: S102 - guarded by AST check + builtins + child process
     fn = namespace.get(_ENTRY_NAME)
     if not callable(fn):
@@ -468,22 +478,28 @@ class UserCaseResult:
     error: str | None = None      # reported as likely_cause="python_error"
 
 
-def _normalize_outputs(raw: Any) -> dict[str, str]:
+def _normalize_outputs(raw: Any, allow_float_demo: bool = False) -> dict[str, str]:
     if not isinstance(raw, dict) or not raw:
         raise TypeError("function must return a non-empty dict")
     out: dict[str, str] = {}
     for k, v in raw.items():
         if not isinstance(k, str):
             raise TypeError("output names must be strings")
+        if allow_float_demo and isinstance(v, float):  # float-ok: demo result conversion
+            out[k] = str(Decimal(str(v)))  # Decimal(str(x)) per Req 8.6
+            continue
         if isinstance(v, bool) or not isinstance(v, (Decimal, int)):
             raise TypeError(f"output {k!r} must be Decimal or int, got {type(v).__name__}")
         out[k] = str(Decimal(v))
     return out
 
 
-def _child_main(conn, python_code: str, case_inputs: list[dict[str, Any]]) -> None:
+def _child_main(conn, python_code: str, case_inputs: list[dict[str, Any]],
+                allow_float_demo: bool = False) -> None:
     try:
         try:  # cap address space so memory bombs fail instead of OOM-killing the host
+            if resource is None:
+                raise OSError("resource module unavailable")
             with open("/proc/self/statm") as fh:
                 vm = int(fh.read().split()[0]) * os.sysconf("SC_PAGE_SIZE")
             limit = vm + _MEMORY_HEADROOM_BYTES
@@ -491,13 +507,13 @@ def _child_main(conn, python_code: str, case_inputs: list[dict[str, Any]]) -> No
         except (OSError, ValueError):
             pass
         try:
-            fn = load_restricted_function(python_code)
+            fn = load_restricted_function(python_code, allow_float_demo)
         except BaseException as exc:  # noqa: BLE001
             conn.send_bytes(json.dumps({"fatal": f"{type(exc).__name__}: {exc}"}).encode())
             return
         for i, inputs in enumerate(case_inputs):
             try:
-                msg = {"i": i, "out": _normalize_outputs(fn(**inputs))}
+                msg = {"i": i, "out": _normalize_outputs(fn(**inputs), allow_float_demo)}
             except BaseException as exc:  # noqa: BLE001 - per-case isolation
                 msg = {"i": i, "err": f"{type(exc).__name__}: {exc}"[:300]}
             conn.send_bytes(json.dumps(msg).encode())
@@ -509,19 +525,29 @@ def _child_main(conn, python_code: str, case_inputs: list[dict[str, Any]]) -> No
 
 
 def run_user_python(python_code: str, cases: list[Case],
-                    timeout_s: float = USER_CODE_TIMEOUT_S) -> list[UserCaseResult]:  # float-ok: timeout seconds
+                    timeout_s: float = USER_CODE_TIMEOUT_S,  # float-ok: timeout seconds
+                    *, allow_float_demo: bool = False) -> list[UserCaseResult]:
     """Run ``python_code`` against every Case; one result per Case, in order.
 
     The code runs in a forked child with a hard ``timeout_s`` deadline for the
     whole batch. Cases not finished by the deadline (the hung one and all after
     it) get a ``python_error`` result; the child is killed.
+
+    With ``allow_float_demo`` the code may use ``float``; Decimal inputs are
+    handed over as floats (a naive translation expects them) and float results
+    are converted back with ``Decimal(str(x))``.
     """
     n = len(cases)
     results: list[UserCaseResult | None] = [None] * n
     ctx = multiprocessing.get_context("fork")
     recv, send = ctx.Pipe(duplex=False)
-    proc = ctx.Process(target=_child_main, args=(send, python_code,
-                                                  [dict(c.inputs) for c in cases]), daemon=True)
+    if allow_float_demo:
+        payload = [{k: (float(v) if isinstance(v, Decimal) else v)  # float-ok: demo inputs
+                    for k, v in c.inputs.items()} for c in cases]
+    else:
+        payload = [dict(c.inputs) for c in cases]
+    proc = ctx.Process(target=_child_main, args=(send, python_code, payload, allow_float_demo),
+                       daemon=True)
     fatal: str | None = None
     deadline = time.monotonic() + timeout_s
     proc.start()
@@ -565,7 +591,6 @@ def run_user_python(python_code: str, cases: list[Case],
 from decimal import ROUND_HALF_EVEN  # noqa: E402
 
 from .cobol_runner import CobolRunner, validate_source  # noqa: E402
-from . import reference_models  # noqa: E402
 
 MAX_COUNTEREXAMPLES = 5
 MAX_RAW_SAMPLE_LINES = 20
@@ -826,6 +851,10 @@ def _compare_case(
     return None
 
 
+#: Test-only hook: ``(preset_id, simulate_float_bug) -> callable``. None at runtime.
+ORACLE_PROVIDER: Callable[[str, bool], Callable[..., dict[str, Decimal]]] | None = None
+
+
 def _run_target(
     preset_id: str,
     cases: list[Case],
@@ -842,9 +871,12 @@ def _run_target(
             return [(None, msg) for _ in cases]
     fn = target_fn
     if fn is None:
-        registry = (reference_models.FLOAT_BUG_REGISTRY if simulate_float_bug
-                    else reference_models.REGISTRY)
-        fn = registry[preset_id]
+        # No runtime oracle: the app never imports reference_models. Tests may
+        # install one through ``ORACLE_PROVIDER`` (see tests/conftest.py).
+        if ORACLE_PROVIDER is None:
+            raise VerificationError(
+                "invalid_request", "python_code or target_fn is required")
+        fn = ORACLE_PROVIDER(preset_id, simulate_float_bug)
     results: list[tuple[dict[str, Decimal] | None, str | None]] = []
     for case in cases:
         try:
@@ -939,4 +971,339 @@ def run_verification(
     return ParityReport.build(
         passed, failed, (time.perf_counter() - start) * 1000.0,  # float-ok: timing ms
         lines[:MAX_RAW_SAMPLE_LINES], counterexamples,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Section 8: universal verification with protocol adapters (task 4.1)
+# ---------------------------------------------------------------------------
+#
+# The contract (inferred by the Legacy_Parser) replaces the bundled catalog:
+# each input field carries scale, min, max and PIC; each output field carries
+# a name and scale. A ProtocolAdapter renders stdin from a Case and parses
+# stdout back into output fields. The program is compiled once (Binary_Cache)
+# and every case runs against that single binary.
+
+from decimal import ROUND_CEILING, ROUND_FLOOR  # noqa: E402
+
+UNIVERSAL_PROTOCOLS = ("batch_space", "single_run_lines", "single_run_space", "no_input_static")
+BATCH_CASES = 150
+SINGLE_RUN_CASES = 40          # within the 35 to 50 range of Requirement 7.2
+SINGLE_RUN_BUDGET_S = 2.5  # float-ok: Requirement 7.3 time budget (seconds)
+_CUSTOM_ID = "custom"
+_DEFAULT_INT_DIGITS = 9
+
+
+def _pic_digits(pic: str) -> tuple[bool, int | None, int | None]:
+    """Return (signed, integer_digits, fraction_digits) of a numeric PIC, or Nones."""
+    text = (pic or "").upper().replace("PICTURE", "").replace("PIC", "").strip()
+    text = text.split()[0] if text.split() else ""
+    signed = text.startswith("S")
+    if signed:
+        text = text[1:]
+    left, _sep, right = text.replace(".", "V").partition("V")
+
+    def count(part: str) -> int:
+        return sum(int(n) if n else 1 for n in re.findall(r"9(?:\((\d+)\))?", part))
+
+    ints, fracs = count(left), count(right)
+    if ints + fracs == 0:
+        return signed, None, None
+    return signed, ints, fracs
+
+
+def _field_bound(text: Any, scale: int, rounding: str) -> int | None:
+    if text is None:
+        return None
+    try:
+        return int(Decimal(str(text)).scaleb(scale).to_integral_value(rounding=rounding))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _contract_fields(contract: dict[str, Any]) -> list[_Field]:
+    """Build integer-unit bounds for every input from min, max and PIC capacity."""
+    fields: list[_Field] = []
+    for f in contract.get("inputs", []):
+        scale = int(f.get("scale", 0))
+        signed, ints, _fr = _pic_digits(str(f.get("pic", "")))
+        cap = 10 ** ((ints if ints is not None else _DEFAULT_INT_DIGITS) + scale) - 1
+        lo = _field_bound(f.get("min"), scale, ROUND_CEILING)
+        hi = _field_bound(f.get("max"), scale, ROUND_FLOOR)
+        floor = -cap if signed else 0
+        lo = floor if lo is None else max(lo, floor)
+        hi = cap if hi is None else min(hi, cap)
+        if lo > hi:
+            lo = hi
+        fields.append(_Field(str(f["name"]), scale, lo, hi))
+    return fields
+
+
+def _signed_flags(contract: dict[str, Any]) -> dict[str, bool]:
+    return {str(f["name"]): _pic_digits(str(f.get("pic", "")))[0]
+            for f in contract.get("inputs", [])}
+
+
+def _interesting_units(f: _Field, signed: bool) -> list[int]:
+    """Boundary and rounding-sensitive values of one field, in integer units."""
+    cent = 10 ** max(f.scale - 2, 0)                  # 0.01 for scale >= 2, else one unit
+    vals = [f.lo, f.lo + 1, f.hi - 1, f.hi, 0, cent, 10 ** f.scale, 100 * 10 ** f.scale,
+            123_45 * cent, 3 * 10 ** f.scale]
+    if signed:
+        vals += [-cent, -(10 ** f.scale)]
+    if f.scale >= 3:  # half-cent decimals: x.xx5
+        half = 5 * 10 ** (f.scale - 3)
+        vals += [half, cent + half, 123 * cent + half, 2_125 * 10 ** (f.scale - 3) if f.scale >= 3 else 0]
+    if f.scale >= 3:  # repeating decimal such as 3.333
+        vals.append(3_333 * 10 ** (f.scale - 3))
+    out: list[int] = []
+    for v in vals:
+        v = min(max(v, f.lo), f.hi)
+        if v not in out:
+            out.append(v)
+    return out
+
+
+def _case_target(io_protocol: str, num_cases: int | None) -> int:
+    if io_protocol == "no_input_static":
+        return 1
+    if io_protocol == "batch_space":
+        n = BATCH_CASES if num_cases is None else num_cases
+        if not 1 <= n <= MAX_CASES:
+            raise ValueError(f"num_cases must be between 1 and {MAX_CASES}")
+        return n
+    if io_protocol in ("single_run_lines", "single_run_space"):
+        if num_cases is None:
+            return SINGLE_RUN_CASES
+        return min(max(num_cases, 35), 50)   # Requirement 7.2: 35 to 50 cases
+    raise ValueError(f"unknown io_protocol: {io_protocol!r}")
+
+
+def generate_universal_cases(contract: dict[str, Any], io_protocol: str,
+                             num_cases: int | None = None,
+                             seed: int | None = None) -> list[Case]:
+    """Adversarial Cases for any contract, honoring protocol counts and field bounds.
+
+    Bounds, 0.00, 0.01, negative values (signed ``S9`` fields) and half-cent
+    decimals come first; a short Hypothesis chunk and seeded random rows fill
+    the rest. The result has ``num_cases`` unique Cases, or fewer when the
+    contract's input space is smaller than that.
+    """
+    target = _case_target(io_protocol, num_cases)
+    fields = _contract_fields(contract)
+    if io_protocol == "no_input_static" or not fields:
+        return [Case(_CUSTOM_ID, {})]
+    signed = _signed_flags(contract)
+    by_name = {f.name: f for f in fields}
+
+    cases: list[Case] = []
+    seen: set[tuple] = set()
+
+    def add(units: dict[str, int]) -> None:
+        case = _build(_CUSTOM_ID, fields, units)
+        k = _key(case)
+        if k not in seen and len(cases) < target:
+            seen.add(k)
+            cases.append(case)
+
+    lists = {f.name: _interesting_units(f, signed[f.name]) for f in fields}
+    longest = max(len(v) for v in lists.values())
+    add({f.name: f.lo for f in fields})
+    add({f.name: f.hi for f in fields})
+    add({f.name: min(max(0, f.lo), f.hi) for f in fields})
+    edge_budget = max(1, (target * 3) // 4)
+    for k in range(longest * 3):
+        if len(cases) >= edge_budget:
+            break
+        add({f.name: lists[f.name][(k * (i + 1) + i) % len(lists[f.name])]
+             for i, f in enumerate(fields)})
+
+    if len(cases) < target:
+        strategy = st.fixed_dictionaries({n: _field_strategy(f) for n, f in by_name.items()})
+        for row in _draw_random(strategy, HYPOTHESIS_CASES, seed):
+            add(row)
+    rng = random.Random(seed)
+    attempts = 0
+    while len(cases) < target and attempts < 20 * target:
+        attempts += 1
+        add({f.name: _rng_units(rng, f) for f in fields})
+    return cases
+
+
+# -- stdin rendering and stdout parsing --------------------------------------
+
+def _value_text(value: Decimal | int, scale: int) -> str:
+    return str(value) if scale == 0 else f"{Decimal(value):.{scale}f}"
+
+
+def render_stdin(case: Case, fields: list[_Field], io_protocol: str) -> str:
+    """Render one Case as the stdin text of its protocol (no trailing newline)."""
+    parts = [_value_text(case.inputs[f.name], f.scale) for f in fields]
+    if io_protocol == "single_run_lines":
+        return "\n".join(parts)
+    if io_protocol in ("batch_space", "single_run_space"):
+        return " ".join(parts)
+    return ""
+
+
+_NUMBER_RE = re.compile(r"^[+-]?(?:\d[\d,]*)?\.?\d+[-+]?$|^[+-]?\d[\d,]*\.?[-+]?$")
+
+
+def _numeric_token(token: str) -> str | None:
+    """Return a canonical Decimal string for a numeric token, else None.
+
+    Accepts COBOL edited forms: thousands commas, a leading ``+``, and a trailing
+    ``-`` sign. The result is parsed with Decimal only, never float.
+    """
+    if not _NUMBER_RE.match(token):
+        return None
+    negative = token.startswith("-") or token.endswith("-")
+    digits = token.strip("+-").replace(",", "")
+    try:
+        value = Decimal(digits)
+    except InvalidOperation:
+        return None
+    return _fmt(-value if negative else value)
+
+
+def _line_tokens(line: str) -> list[str]:
+    """Tokens of one output line; a ``label: value`` or ``label = value`` keeps the value."""
+    for sep in (":", "="):
+        if sep in line:
+            line = line.rsplit(sep, 1)[1]
+    return line.split()
+
+
+def parse_outputs(stdout: str, n_outputs: int, io_protocol: str) -> list[str] | None:
+    """Parse one run's stdout into ``n_outputs`` canonical value tokens, or None.
+
+    ``single_run_*`` and ``no_input_static`` outputs may be labeled lines
+    (``Net Pay: 1,234.50``) or positional values. Numeric tokens are preferred;
+    when their count does not match, all tokens are tried.
+    """
+    lines = [ln for ln in stdout.splitlines() if ln.strip()]
+    all_tokens: list[str] = []
+    numeric: list[str] = []
+    for ln in lines:
+        for tok in _line_tokens(ln):
+            n = _numeric_token(tok)
+            all_tokens.append(n if n is not None else tok)
+            if n is not None:
+                numeric.append(n)
+    if len(numeric) == n_outputs:
+        return numeric
+    if len(all_tokens) == n_outputs:
+        return all_tokens
+    return None
+
+
+def _run_cobol_cases(runner: CobolRunner, binary: Path, cases: list[Case],
+                     fields: list[_Field], n_outputs: int, io_protocol: str
+                     ) -> list[list[str] | None]:
+    """Run every Case against the one compiled binary; one parsed row per Case."""
+    if io_protocol == "batch_space":
+        rows = [render_stdin(c, fields, io_protocol) for c in cases]
+        run = runner.run_batch(binary, rows)
+        _check_run(run)
+        lines = [ln for ln in run.stdout.splitlines()]
+        if len(lines) != len(cases):
+            raise VerificationError(
+                "row_count_mismatch",
+                f"COBOL produced {len(lines)} output rows for {len(cases)} cases")
+        return [parse_outputs(ln, n_outputs, io_protocol) for ln in lines]
+
+    results: list[list[str] | None] = []
+    started = time.monotonic()
+    for case in cases:
+        run = runner.run_single(binary, render_stdin(case, fields, io_protocol))
+        _check_run(run)
+        results.append(parse_outputs(run.stdout, n_outputs, io_protocol))
+        if time.monotonic() - started > SINGLE_RUN_BUDGET_S * 4:  # hard stop on a hung host
+            raise VerificationError("run_timeout", "single-run verification took too long")
+    return results
+
+
+def _check_run(run: Any) -> None:
+    if run.timed_out:
+        raise VerificationError("run_timeout", "COBOL run exceeded 5 seconds")
+    if run.truncated:
+        raise VerificationError("output_truncated", "COBOL output exceeded the size limit")
+    if run.exit_code != 0:
+        raise VerificationError(
+            "run_failed", f"COBOL exited with code {run.exit_code}: {run.stderr.strip()[:500]}")
+
+
+def run_universal_verification(
+    cobol_source: str,
+    contract: dict[str, Any],
+    io_protocol: str,
+    python_code: str,
+    *,
+    num_cases: int | None = None,
+    seed: int | None = None,
+    allow_float_demo: bool = False,
+    runner: CobolRunner | None = None,
+) -> ParityReport:
+    """Differentially verify ``python_code`` against real GnuCOBOL for any contract.
+
+    The COBOL source is validated, compiled once (Binary_Cache) and every Case
+    runs against that binary. ``python_code`` runs only in the restricted
+    namespace. Every output field must match with a difference of 0. With
+    ``allow_float_demo`` float results are converted with ``Decimal(str(x))``
+    and mismatches are labeled ``float_drift`` with the exact drift.
+
+    Raises ``VerificationError`` when no report can be produced.
+    """
+    start = time.perf_counter()
+    if io_protocol not in UNIVERSAL_PROTOCOLS:
+        raise VerificationError("invalid_request", f"unknown io_protocol: {io_protocol!r}")
+    out_names = tuple(str(o["name"]) for o in contract.get("outputs", []))
+    if not out_names:
+        raise VerificationError("invalid_request", "contract has no outputs")
+    if io_protocol != "no_input_static" and not contract.get("inputs"):
+        raise VerificationError("invalid_request", "contract has no inputs")
+    try:
+        cases = generate_universal_cases(contract, io_protocol, num_cases, seed)
+    except ValueError as exc:
+        raise VerificationError("invalid_request", str(exc)) from None
+    fields = _contract_fields(contract)
+
+    verdict = validate_source(cobol_source)
+    if not verdict.accepted:
+        raise VerificationError(
+            "rejected", verdict.error.message if verdict.error else "source rejected")
+    runner = runner or _shared_runner()
+    compiled = runner.get_binary(cobol_source)          # compile once per run
+    if not compiled.success or compiled.binary_path is None:
+        raise VerificationError("compile_failed", (compiled.stderr or "compile failed").strip()[:2000])
+
+    cobol_rows = _run_cobol_cases(
+        runner, compiled.binary_path, cases, fields, len(out_names), io_protocol)
+
+    try:
+        targets = [(r.outputs, r.error) for r in run_user_python(
+            python_code, cases, allow_float_demo=allow_float_demo)]
+    except Exception as exc:  # noqa: BLE001 - e.g. fork unavailable on this host
+        msg = f"{type(exc).__name__}: {exc}"[:300]
+        targets = [(None, msg) for _ in cases]
+
+    passed = failed = 0
+    counterexamples: list[Counterexample] = []
+    samples: list[str] = []
+    for case, tokens, (py_out, py_err) in zip(cases, cobol_rows, targets):
+        line = " ".join(tokens) if tokens is not None else ""
+        if len(samples) < MAX_RAW_SAMPLE_LINES:
+            samples.append(line)
+        inputs_text = {k: _fmt(v) for k, v in case.inputs.items()}
+        ce = _compare_case(case, inputs_text, out_names, line, py_out, py_err, allow_float_demo)
+        if ce is None:
+            passed += 1
+        else:
+            failed += 1
+            if len(counterexamples) < MAX_COUNTEREXAMPLES:
+                counterexamples.append(ce)
+
+    return ParityReport.build(
+        passed, failed, (time.perf_counter() - start) * 1000.0,  # float-ok: timing ms
+        samples, counterexamples,
     )
