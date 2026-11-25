@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 MAX_SOURCE_BYTES = 64 * 1024
-SUBPROCESS_TIMEOUT_S = 5.0
+SUBPROCESS_TIMEOUT_S = 5.0  # float-ok: subprocess timeout
 MAX_STDOUT_BYTES = 1024 * 1024
 MAX_STDERR_BYTES = 64 * 1024
 PRESETS_DIR = Path(__file__).resolve().parent.parent / "cobol_samples"
@@ -219,7 +219,7 @@ class CompileResult:
     binary_path: Path | None
     stdout: str
     stderr: str
-    duration_ms: float
+    duration_ms: float  # float-ok: timing
     timed_out: bool = False
 
 
@@ -230,7 +230,7 @@ class RunResult:
     stderr: str
     truncated: bool
     timed_out: bool
-    duration_ms: float
+    duration_ms: float  # float-ok: timing
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
@@ -247,12 +247,12 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         pass
 
 
-def _execute(
+def _execute(  # float-ok: timeout/duration timing
     args: list[str],
     *,
     cwd: Path,
     stdin_data: bytes,
-    timeout: float,
+    timeout: float,  # float-ok: subprocess timeout
     max_stdout: int,
     max_stderr: int,
 ) -> tuple[int, bytes, bytes, bool, bool, float]:
@@ -330,7 +330,7 @@ def _execute(
             except OSError:
                 pass
 
-    ms = (time.perf_counter() - start) * 1000.0
+    ms = (time.perf_counter() - start) * 1000.0  # float-ok: timing ms
     return (
         proc.returncode,
         bytes(buffers["out"]),
@@ -370,7 +370,7 @@ class CobolRunner:
                 max_stderr=MAX_STDERR_BYTES,
             )
         except FileNotFoundError:
-            ms = (time.perf_counter() - start) * 1000.0
+            ms = (time.perf_counter() - start) * 1000.0  # float-ok: timing ms
             return CompileResult(
                 False, None, "", f"cobc executable not found: {self.cobc_path}", ms
             )
@@ -422,7 +422,7 @@ class CobolRunner:
         binary, compiled = self._preset_binary(preset_id)
         if binary is None:
             detail = compiled.stderr if compiled else "preset compile failed"
-            return RunResult(-1, "", detail, False, False, 0.0)
+            return RunResult(-1, "", detail, False, False, 0.0)  # float-ok: timing placeholder
         return self.run_batch(binary, input_rows)
 
     # -- custom ----------------------------------------------------------
@@ -433,7 +433,7 @@ class CobolRunner:
         if not verdict.accepted:
             err = verdict.error
             msg = err.message if err else "Source rejected"
-            return CompileResult(False, None, "", msg, 0.0), None
+            return CompileResult(False, None, "", msg, 0.0), None  # float-ok: timing placeholder
         tmp = tempfile.TemporaryDirectory(prefix="vericobol_")
         try:
             compiled = self.compile_source(source, Path(tmp.name))

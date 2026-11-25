@@ -1,0 +1,420 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1.1 Create `backend/app/pipeline_cache.py`": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575664537
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575674409
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575906826
+      }
+    ],
+    "2.1 Create `backend/app/llm_client.py`": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575664639
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575674658
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575907818
+      }
+    ],
+    "3.1 Create the data models in `backend/app/resurrection.py`": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575664864
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575675121
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575908350
+      }
+    ],
+    "3.2 Create `backend/app/export_template.py`": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575665062
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575913408
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795576166164
+      }
+    ],
+    "3.4 Add the deterministic LLM stub fixtures to `backend/tests/conftest.py`": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575665253
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575913526
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795576165424
+      }
+    ],
+    "4.1 Add `SelfHealingLoop` to `backend/app/resurrection.py`": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575665496
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575913749
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795576164975
+      }
+    ],
+    "5.1 Add `Pipeline` to `backend/app/resurrection.py`": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575665686
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795576171637
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795576699939
+      }
+    ],
+    "5.2 Create `backend/app/bundle_builder.py`": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575665883
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795576704205
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577007509
+      }
+    ],
+    "5.3 Generate and commit `backend/cobol_samples/preset_bundles.json`": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575666104
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577011520
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577097993
+      }
+    ],
+    "6. Checkpoint - Ensure all tests pass": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575666312
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577101936
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577229057
+      }
+    ],
+    "7.1 Extend `backend/app/main.py`": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575666543
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577237634
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577661086
+      }
+    ],
+    "8.1 Create `backend/mcp_server/__init__.py` and `backend/mcp_server/server.py`": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575666773
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577237878
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577661436
+      }
+    ],
+    "8.2 Create `.kiro/settings/mcp.json`": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575666899
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577238061
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795579899736
+      }
+    ],
+    "9.1 Create the float guard script and the two Kiro hooks": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575667067
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577238593
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577661748
+      }
+    ],
+    "9.2 Create `.devcontainer/devcontainer.json`": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575667206
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577239236
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577662549
+      }
+    ],
+    "9.3 Update `backend/Dockerfile` and `backend/.dockerignore`": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575667434
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577663564
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577806772
+      }
+    ],
+    "10. Checkpoint - Ensure all tests pass": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575667580
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795579904202
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795580099622
+      }
+    ],
+    "11. Sync `.kiro/specs/cobol-verification-engine/tasks.md`": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575667763
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795580108335
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795580184923
+      }
+    ],
+    "12. Rebuild the Docker image and run the full test suite": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575667913
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795580185696
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795580469156
+      }
+    ],
+    "13. Commit all changes and push non-interactively": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575668021
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795580679679
+      }
+    ],
+    "1. Implement the pipeline cache": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575906946
+      }
+    ],
+    "2. Implement the LLM client and budget tracker": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795575907978
+      }
+    ],
+    "4. Implement the self-healing loop": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795576165190
+      }
+    ],
+    "3. Define pipeline data models, export template and test stub": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795576166408
+      }
+    ],
+    "5. Implement the pipeline orchestration, demo mode and preset bundles": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577098123
+      }
+    ],
+    "7. Add the resurrect and export endpoints": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577661227
+      }
+    ],
+    "7.11 Write endpoint example tests in `backend/tests/test_resurrection_pipeline.py`": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577664586
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577805130
+      }
+    ],
+    "8.3 Write MCP example tests in `backend/tests/test_mcp_server.py`": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577665511
+      },
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577806117
+      }
+    ],
+    "9. Add hooks, devcontainer and image contents": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795577806878
+      }
+    ],
+    "8. Implement the MCP server": [
+      {
+        "executionId": "72b4dbd8-4882-4fd3-af33-ff5de2322740",
+        "chatSessionId": "sess_30b3a499-b031-4c6e-a16e-ddd3d1b41ba1",
+        "timestamp": 1795579899936
+      }
+    ]
+  }
+}

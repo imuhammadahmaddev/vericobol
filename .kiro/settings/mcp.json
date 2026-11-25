@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "vericobol-gnucobol": {
+      "command": "docker",
+      "args": ["run", "--rm", "-i", "vericobol-backend", "python", "-m", "mcp_server.server"],
+      "disabled": false,
+      "autoApprove": ["list_cobol_presets"]
+    }
+  }
+}

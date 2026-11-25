@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "name": "Verify: Live GnuCOBOL Parity",
+  "description": "When a preset COBOL program or the reference models change, runs the live GnuCOBOL differential parity tests in Docker.",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": ["backend/cobol_samples/*.cbl", "backend/app/reference_models.py"]
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "docker run --rm vericobol-backend python -m pytest -q tests/test_loan_properties.py tests/test_compound_properties.py tests/test_ledger_properties.py tests/test_pass_criterion_properties.py"
+  }
+}

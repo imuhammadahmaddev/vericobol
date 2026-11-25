@@ -246,13 +246,13 @@ HYPOTHESIS_CASES = 20   # rows drawn through Hypothesis per generate_cases call
 def _rng_units(rng: random.Random, f: _Field) -> int:
     """Cheap biased draw of integer units in [lo, hi]: bounds, uniform, or log-uniform."""
     roll = rng.random()
-    if roll < 0.10:
+    if roll < 0.10:  # float-ok: Hypothesis-style sampling weight
         return rng.choice((f.lo, f.lo + 1, f.hi - 1, f.hi, 0 if f.lo <= 0 <= f.hi else f.lo))
     span = max(abs(f.lo), abs(f.hi))
-    if roll < 0.30:
+    if roll < 0.30:  # float-ok: sampling weight
         return rng.randint(f.lo, f.hi)
     mag = rng.getrandbits(rng.randint(1, max(1, span.bit_length())))
-    value = -mag if (f.lo < 0 and rng.random() < 0.5) else mag
+    value = -mag if (f.lo < 0 and rng.random() < 0.5) else mag  # float-ok: sampling weight
     return min(max(value, f.lo), f.hi)
 
 
@@ -263,9 +263,9 @@ _RATE_FAVOURITES = (3_333, 6_667, 8_333, 1_667, 2_125, 4_375, 5_005, 12_345, 999
 def _rng_row(preset_id: str, ordered: list[_Field], by_name: dict[str, _Field],
              rng: random.Random) -> dict[str, int]:
     row = {f.name: _rng_units(rng, f) for f in ordered}
-    if "annual_rate_pct" in row and rng.random() < 0.25:
+    if "annual_rate_pct" in row and rng.random() < 0.25:  # float-ok: sampling weight
         row["annual_rate_pct"] = rng.choice(_RATE_FAVOURITES)
-    if preset_id == "daily_ledger" and rng.random() < 0.5:
+    if preset_id == "daily_ledger" and rng.random() < 0.5:  # float-ok: sampling weight
         th = by_name["overdraft_threshold"]
         net = row["opening_balance"] + row["deposits"] - row["withdrawals"]
         row["overdraft_threshold"] = min(max(net + rng.randint(-2, 2), th.lo), th.hi)
@@ -371,7 +371,7 @@ import time
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Context, InvalidOperation
 from typing import Any, Callable
 
-USER_CODE_TIMEOUT_S = 5.0
+USER_CODE_TIMEOUT_S = 5.0  # float-ok: subprocess timeout
 MAX_PYTHON_CODE_CHARS = 64 * 1024
 _ENTRY_NAME = "calculate"
 _MEMORY_HEADROOM_BYTES = 96 * 1024 * 1024
@@ -509,7 +509,7 @@ def _child_main(conn, python_code: str, case_inputs: list[dict[str, Any]]) -> No
 
 
 def run_user_python(python_code: str, cases: list[Case],
-                    timeout_s: float = USER_CODE_TIMEOUT_S) -> list[UserCaseResult]:
+                    timeout_s: float = USER_CODE_TIMEOUT_S) -> list[UserCaseResult]:  # float-ok: timeout seconds
     """Run ``python_code`` against every Case; one result per Case, in order.
 
     The code runs in a forked child with a hard ``timeout_s`` deadline for the
@@ -552,7 +552,7 @@ def run_user_python(python_code: str, cases: list[Case],
     finally:
         if proc.is_alive():
             proc.kill()
-        proc.join(1.0)
+        proc.join(1.0)  # float-ok: join timeout
         recv.close()
     default = fatal or f"python_code exceeded {timeout_s:g} s or terminated abnormally"
     return [r if r is not None else UserCaseResult(error=default) for r in results]
@@ -653,12 +653,12 @@ class ParityReport:
     failed_cases: int
     parity_score_pct: str          # Decimal serialized as a string, 2 places
     verified: bool
-    execution_ms: float
+    execution_ms: float  # float-ok: timing
     raw_cobol_sample_output: list[str] = field(default_factory=list)   # at most 20 lines
     counterexamples: list[Counterexample] = field(default_factory=list)  # at most 5
 
     @classmethod
-    def build(cls, passed_cases: int, failed_cases: int, execution_ms: float,
+    def build(cls, passed_cases: int, failed_cases: int, execution_ms: float,  # float-ok: timing
               raw_cobol_sample_output: list[str],
               counterexamples: list[Counterexample]) -> "ParityReport":
         total = passed_cases + failed_cases
@@ -700,7 +700,7 @@ class ParityReport:
             failed_cases=int(data["failed_cases"]),
             parity_score_pct=data["parity_score_pct"],
             verified=bool(data["verified"]),
-            execution_ms=float(ms) if isinstance(ms, Decimal) else ms,
+            execution_ms=float(ms) if isinstance(ms, Decimal) else ms,  # float-ok: timing ms
             raw_cobol_sample_output=list(data["raw_cobol_sample_output"]),
             counterexamples=[Counterexample.from_dict(c) for c in data["counterexamples"]],
         )
@@ -937,6 +937,6 @@ def run_verification(
                 counterexamples.append(ce)
 
     return ParityReport.build(
-        passed, failed, (time.perf_counter() - start) * 1000.0,
+        passed, failed, (time.perf_counter() - start) * 1000.0,  # float-ok: timing ms
         lines[:MAX_RAW_SAMPLE_LINES], counterexamples,
     )

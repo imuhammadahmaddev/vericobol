@@ -1,0 +1,734 @@
+{
+  "compound_int": {
+    "false": {
+      "business_rules": [
+        "Inputs are the principal (up to 9 digits plus 2 decimals), the annual rate as a percentage (up to 3 digits plus 3 decimals), the number of compounding periods per year (0 to 99) and the number of years (0 to 99).",
+        "The number of periods is compounds per year multiplied by years.",
+        "When the number of periods is 0, nothing compounds and the maturity amount equals the principal.",
+        "Each period multiplies the running balance by (100 x periods per year + annual rate) divided by (100 x periods per year), which is 1 plus the annual rate per period.",
+        "The running balance is stored rounded half-up (COBOL ROUNDED) to the cent after every period, so rounding differences accumulate period by period exactly as in the legacy program.",
+        "Maturity amount is the running balance after the last period, in PIC 9(9)V99 (two decimals, no sign).",
+        "Accrued interest is maturity amount minus the original principal, rounded half-up, in a signed PIC S9(9)V99 field.",
+        "A balance that grows beyond nine integer digits loses its high-order digits, as in COBOL."
+      ],
+      "dashboard_metadata": {
+        "inputs": [
+          {
+            "label": "Principal",
+            "max": "100000.00",
+            "min": "0.00",
+            "name": "principal",
+            "step": "100.00",
+            "type": "decimal"
+          },
+          {
+            "label": "Annual Rate %",
+            "max": "20.000",
+            "min": "0.000",
+            "name": "annual_rate_pct",
+            "step": "0.001",
+            "type": "decimal"
+          },
+          {
+            "label": "Compounds per Year",
+            "max": "12",
+            "min": "1",
+            "name": "compounds_per_year",
+            "step": "1",
+            "type": "integer"
+          },
+          {
+            "label": "Years",
+            "max": "30",
+            "min": "1",
+            "name": "years",
+            "step": "1",
+            "type": "integer"
+          }
+        ],
+        "outputs": [
+          {
+            "format": "currency",
+            "label": "Maturity Amount",
+            "name": "maturity_amount"
+          },
+          {
+            "format": "currency",
+            "label": "Accrued Interest",
+            "name": "accrued_interest"
+          }
+        ]
+      },
+      "export_fastapi_code": "\"\"\"Verified COBOL resurrection: exact-Decimal calculation exposed as a FastAPI service.\n\nRun with:  uvicorn <module_name>:app\nAll request and response values are strings holding Decimal numbers.\n\"\"\"\nimport decimal as _decimal\nfrom decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP\n\nContext = _decimal.Context(prec=60, rounding=ROUND_HALF_UP)\n\n# ---- verified code (embedded verbatim) ----\n_COB_MAX_DIGITS = 38\n\ndef _scaled_trunc(value, scale):\n    return int(value.scaleb(scale))\n\ndef _store_unsigned(value, int_digits, scale):\n    return abs(_scaled_trunc(value, scale)) % 10 ** (int_digits + scale)\n\ndef _store_signed(value, int_digits, scale):\n    scaled = _scaled_trunc(value, scale)\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _wrap_unsigned(scaled, int_digits, scale):\n    return abs(scaled) % 10 ** (int_digits + scale)\n\ndef _wrap_signed(scaled, int_digits, scale):\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _cob_div(n, n_scale, d, d_scale):\n    scale = n_scale - d_scale\n    shift = _COB_MAX_DIGITS + (-scale if scale < 0 else 0)\n    num = n * 10 ** shift\n    q = abs(num) // abs(d)\n    if (num < 0) != (d < 0):\n        q = -q\n    return (q, scale + shift)\n\ndef _round_half_up(value, scale, to_scale):\n    if scale <= to_scale:\n        return value * 10 ** (to_scale - scale)\n    unit = 10 ** (scale - to_scale)\n    mag, rem = divmod(abs(value), unit)\n    if rem * 2 >= unit:\n        mag += 1\n    return -mag if value < 0 else mag\n\ndef _to_decimal(scaled, scale):\n    return Decimal(scaled).scaleb(-scale)\n\ndef compound_int(principal, annual_rate_pct, compounds_per_year, years):\n    p = _store_unsigned(principal, 9, 2)\n    r = _store_unsigned(annual_rate_pct, 3, 3)\n    per_year = abs(int(compounds_per_year)) % 100\n    yrs = abs(int(years)) % 100\n    periods = per_year * yrs\n    balance = p\n    if periods > 0:\n        denom = 100 * per_year * 1000\n        numer = denom + r\n        for _ in range(periods):\n            q, qs = _cob_div(balance * numer, 5, denom, 3)\n            balance = _wrap_unsigned(_round_half_up(q, qs, 2), 9, 2)\n    maturity = balance\n    accrued = _wrap_signed(maturity - p, 9, 2)\n    accrued_shown = _wrap_signed(accrued, 8, 2)\n    return {'maturity_amount': _to_decimal(maturity, 2), 'accrued_interest': _to_decimal(accrued_shown, 2)}\n\ndef calculate(**kwargs):\n    return compound_int(**kwargs)\n\n\n# ---- end of verified code ----\n_vc_entry = calculate\n\nfrom fastapi import Body as _vc_Body, FastAPI as _vc_FastAPI, HTTPException as _vc_HTTPException\n\n# (name, scale) in contract order. Scale 0 means the function receives an int.\n_VC_INPUTS = (('principal', 2), ('annual_rate_pct', 3), ('compounds_per_year', 0), ('years', 0))\n_VC_OUTPUTS = ('maturity_amount', 'accrued_interest')\n\napp = _vc_FastAPI(title=\"Verified COBOL calculation\")\n\n\ndef _vc_parse(name, scale, text):\n    try:\n        value = Decimal(text.strip())\n    except (_decimal.InvalidOperation, ValueError):\n        raise _vc_HTTPException(status_code=422, detail=name + \" must be a decimal string\")\n    if not value.is_finite():\n        raise _vc_HTTPException(status_code=422, detail=name + \" must be a finite decimal\")\n    if scale == 0:\n        if value != value.to_integral_value():\n            raise _vc_HTTPException(status_code=422, detail=name + \" must be a whole number\")\n        return int(value)\n    return value\n\n\n@app.post(\"/calculate\")\ndef _vc_calculate(payload: dict[str, str] = _vc_Body(...)) -> dict[str, str]:\n    expected = [name for name, _ in _VC_INPUTS]\n    if sorted(payload) != sorted(expected):\n        raise _vc_HTTPException(\n            status_code=422, detail=\"expected exactly these string fields: \" + \", \".join(expected)\n        )\n    kwargs = {name: _vc_parse(name, scale, payload[name]) for name, scale in _VC_INPUTS}\n    raw = _vc_entry(**kwargs)\n    result = {}\n    for key, value in raw.items():\n        if isinstance(value, bool) or not isinstance(value, (Decimal, int)):\n            raise _vc_HTTPException(status_code=500, detail=\"calculation returned a non-Decimal value\")\n        result[key] = str(Decimal(value))\n    missing = [name for name in _VC_OUTPUTS if name not in result]\n    if missing:\n        raise _vc_HTTPException(status_code=500, detail=\"calculation did not return: \" + \", \".join(missing))\n    return result\n",
+      "pic_mappings": [
+        {
+          "name": "principal",
+          "pic": "9(9)V99",
+          "rounding": "ROUND_DOWN",
+          "scale": "2"
+        },
+        {
+          "name": "annual_rate_pct",
+          "pic": "9(3)V999",
+          "rounding": "ROUND_DOWN",
+          "scale": "3"
+        },
+        {
+          "name": "compounds_per_year",
+          "pic": "9(2)",
+          "rounding": "ROUND_DOWN",
+          "scale": "0"
+        },
+        {
+          "name": "years",
+          "pic": "9(2)",
+          "rounding": "ROUND_DOWN",
+          "scale": "0"
+        },
+        {
+          "name": "maturity_amount",
+          "pic": "9(9)V99",
+          "rounding": "ROUND_HALF_UP",
+          "scale": "2"
+        },
+        {
+          "name": "accrued_interest",
+          "pic": "S9(9)V99",
+          "rounding": "ROUND_HALF_UP",
+          "scale": "2"
+        }
+      ],
+      "stages": [
+        {
+          "elapsed_ms": 0,
+          "name": "legacy_parser",
+          "source": "cache",
+          "status": "ok"
+        },
+        {
+          "elapsed_ms": 0,
+          "name": "cloud_architect",
+          "source": "cache",
+          "status": "ok"
+        }
+      ],
+      "verified_python_code": "_COB_MAX_DIGITS = 38\n\ndef _scaled_trunc(value, scale):\n    return int(value.scaleb(scale))\n\ndef _store_unsigned(value, int_digits, scale):\n    return abs(_scaled_trunc(value, scale)) % 10 ** (int_digits + scale)\n\ndef _store_signed(value, int_digits, scale):\n    scaled = _scaled_trunc(value, scale)\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _wrap_unsigned(scaled, int_digits, scale):\n    return abs(scaled) % 10 ** (int_digits + scale)\n\ndef _wrap_signed(scaled, int_digits, scale):\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _cob_div(n, n_scale, d, d_scale):\n    scale = n_scale - d_scale\n    shift = _COB_MAX_DIGITS + (-scale if scale < 0 else 0)\n    num = n * 10 ** shift\n    q = abs(num) // abs(d)\n    if (num < 0) != (d < 0):\n        q = -q\n    return (q, scale + shift)\n\ndef _round_half_up(value, scale, to_scale):\n    if scale <= to_scale:\n        return value * 10 ** (to_scale - scale)\n    unit = 10 ** (scale - to_scale)\n    mag, rem = divmod(abs(value), unit)\n    if rem * 2 >= unit:\n        mag += 1\n    return -mag if value < 0 else mag\n\ndef _to_decimal(scaled, scale):\n    return Decimal(scaled).scaleb(-scale)\n\ndef compound_int(principal, annual_rate_pct, compounds_per_year, years):\n    p = _store_unsigned(principal, 9, 2)\n    r = _store_unsigned(annual_rate_pct, 3, 3)\n    per_year = abs(int(compounds_per_year)) % 100\n    yrs = abs(int(years)) % 100\n    periods = per_year * yrs\n    balance = p\n    if periods > 0:\n        denom = 100 * per_year * 1000\n        numer = denom + r\n        for _ in range(periods):\n            q, qs = _cob_div(balance * numer, 5, denom, 3)\n            balance = _wrap_unsigned(_round_half_up(q, qs, 2), 9, 2)\n    maturity = balance\n    accrued = _wrap_signed(maturity - p, 9, 2)\n    accrued_shown = _wrap_signed(accrued, 8, 2)\n    return {'maturity_amount': _to_decimal(maturity, 2), 'accrued_interest': _to_decimal(accrued_shown, 2)}\n\ndef calculate(**kwargs):\n    return compound_int(**kwargs)\n"
+    },
+    "true": {
+      "business_rules": [
+        "Inputs are the principal (up to 9 digits plus 2 decimals), the annual rate as a percentage (up to 3 digits plus 3 decimals), the number of compounding periods per year (0 to 99) and the number of years (0 to 99).",
+        "The number of periods is compounds per year multiplied by years.",
+        "When the number of periods is 0, nothing compounds and the maturity amount equals the principal.",
+        "Each period multiplies the running balance by (100 x periods per year + annual rate) divided by (100 x periods per year), which is 1 plus the annual rate per period.",
+        "The running balance is stored rounded half-up (COBOL ROUNDED) to the cent after every period, so rounding differences accumulate period by period exactly as in the legacy program.",
+        "Maturity amount is the running balance after the last period, in PIC 9(9)V99 (two decimals, no sign).",
+        "Accrued interest is maturity amount minus the original principal, rounded half-up, in a signed PIC S9(9)V99 field.",
+        "A balance that grows beyond nine integer digits loses its high-order digits, as in COBOL."
+      ],
+      "dashboard_metadata": {
+        "inputs": [
+          {
+            "label": "Principal",
+            "max": "100000.00",
+            "min": "0.00",
+            "name": "principal",
+            "step": "100.00",
+            "type": "decimal"
+          },
+          {
+            "label": "Annual Rate %",
+            "max": "20.000",
+            "min": "0.000",
+            "name": "annual_rate_pct",
+            "step": "0.001",
+            "type": "decimal"
+          },
+          {
+            "label": "Compounds per Year",
+            "max": "12",
+            "min": "1",
+            "name": "compounds_per_year",
+            "step": "1",
+            "type": "integer"
+          },
+          {
+            "label": "Years",
+            "max": "30",
+            "min": "1",
+            "name": "years",
+            "step": "1",
+            "type": "integer"
+          }
+        ],
+        "outputs": [
+          {
+            "format": "currency",
+            "label": "Maturity Amount",
+            "name": "maturity_amount"
+          },
+          {
+            "format": "currency",
+            "label": "Accrued Interest",
+            "name": "accrued_interest"
+          }
+        ]
+      },
+      "export_fastapi_code": "\"\"\"Verified COBOL resurrection: exact-Decimal calculation exposed as a FastAPI service.\n\nRun with:  uvicorn <module_name>:app\nAll request and response values are strings holding Decimal numbers.\n\"\"\"\nimport decimal as _decimal\nfrom decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP\n\nContext = _decimal.Context(prec=60, rounding=ROUND_HALF_UP)\n\n# ---- verified code (embedded verbatim) ----\n_COB_MAX_DIGITS = 38\n\ndef _scaled_trunc(value, scale):\n    return int(value.scaleb(scale))\n\ndef _store_unsigned(value, int_digits, scale):\n    return abs(_scaled_trunc(value, scale)) % 10 ** (int_digits + scale)\n\ndef _store_signed(value, int_digits, scale):\n    scaled = _scaled_trunc(value, scale)\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _wrap_unsigned(scaled, int_digits, scale):\n    return abs(scaled) % 10 ** (int_digits + scale)\n\ndef _wrap_signed(scaled, int_digits, scale):\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _cob_div(n, n_scale, d, d_scale):\n    scale = n_scale - d_scale\n    shift = _COB_MAX_DIGITS + (-scale if scale < 0 else 0)\n    num = n * 10 ** shift\n    q = abs(num) // abs(d)\n    if (num < 0) != (d < 0):\n        q = -q\n    return (q, scale + shift)\n\ndef _round_half_up(value, scale, to_scale):\n    if scale <= to_scale:\n        return value * 10 ** (to_scale - scale)\n    unit = 10 ** (scale - to_scale)\n    mag, rem = divmod(abs(value), unit)\n    if rem * 2 >= unit:\n        mag += 1\n    return -mag if value < 0 else mag\n\ndef _to_decimal(scaled, scale):\n    return Decimal(scaled).scaleb(-scale)\n\ndef compound_int(principal, annual_rate_pct, compounds_per_year, years):\n    p = _store_unsigned(principal, 9, 2)\n    r = _store_unsigned(annual_rate_pct, 3, 3)\n    per_year = abs(int(compounds_per_year)) % 100\n    yrs = abs(int(years)) % 100\n    periods = per_year * yrs\n    balance = p\n    if periods > 0:\n        denom = 100 * per_year * 1000\n        numer = denom + r\n        for _ in range(periods):\n            q, qs = _cob_div(balance * numer, 5, denom, 3)\n            balance = _wrap_unsigned(_round_half_up(q, qs, 2), 9, 2)\n    maturity = balance\n    accrued = _wrap_signed(maturity - p, 9, 2)\n    accrued_shown = _wrap_signed(accrued, 8, 2)\n    return {'maturity_amount': _to_decimal(maturity, 2), 'accrued_interest': _to_decimal(accrued_shown, 2)}\n\ndef calculate(**kwargs):\n    return compound_int(**kwargs)\n\n\n# ---- end of verified code ----\n_vc_entry = calculate\n\nfrom fastapi import Body as _vc_Body, FastAPI as _vc_FastAPI, HTTPException as _vc_HTTPException\n\n# (name, scale) in contract order. Scale 0 means the function receives an int.\n_VC_INPUTS = (('principal', 2), ('annual_rate_pct', 3), ('compounds_per_year', 0), ('years', 0))\n_VC_OUTPUTS = ('maturity_amount', 'accrued_interest')\n\napp = _vc_FastAPI(title=\"Verified COBOL calculation\")\n\n\ndef _vc_parse(name, scale, text):\n    try:\n        value = Decimal(text.strip())\n    except (_decimal.InvalidOperation, ValueError):\n        raise _vc_HTTPException(status_code=422, detail=name + \" must be a decimal string\")\n    if not value.is_finite():\n        raise _vc_HTTPException(status_code=422, detail=name + \" must be a finite decimal\")\n    if scale == 0:\n        if value != value.to_integral_value():\n            raise _vc_HTTPException(status_code=422, detail=name + \" must be a whole number\")\n        return int(value)\n    return value\n\n\n@app.post(\"/calculate\")\ndef _vc_calculate(payload: dict[str, str] = _vc_Body(...)) -> dict[str, str]:\n    expected = [name for name, _ in _VC_INPUTS]\n    if sorted(payload) != sorted(expected):\n        raise _vc_HTTPException(\n            status_code=422, detail=\"expected exactly these string fields: \" + \", \".join(expected)\n        )\n    kwargs = {name: _vc_parse(name, scale, payload[name]) for name, scale in _VC_INPUTS}\n    raw = _vc_entry(**kwargs)\n    result = {}\n    for key, value in raw.items():\n        if isinstance(value, bool) or not isinstance(value, (Decimal, int)):\n            raise _vc_HTTPException(status_code=500, detail=\"calculation returned a non-Decimal value\")\n        result[key] = str(Decimal(value))\n    missing = [name for name in _VC_OUTPUTS if name not in result]\n    if missing:\n        raise _vc_HTTPException(status_code=500, detail=\"calculation did not return: \" + \", \".join(missing))\n    return result\n",
+      "pic_mappings": [
+        {
+          "name": "principal",
+          "pic": "9(9)V99",
+          "rounding": "ROUND_DOWN",
+          "scale": "2"
+        },
+        {
+          "name": "annual_rate_pct",
+          "pic": "9(3)V999",
+          "rounding": "ROUND_DOWN",
+          "scale": "3"
+        },
+        {
+          "name": "compounds_per_year",
+          "pic": "9(2)",
+          "rounding": "ROUND_DOWN",
+          "scale": "0"
+        },
+        {
+          "name": "years",
+          "pic": "9(2)",
+          "rounding": "ROUND_DOWN",
+          "scale": "0"
+        },
+        {
+          "name": "maturity_amount",
+          "pic": "9(9)V99",
+          "rounding": "ROUND_HALF_UP",
+          "scale": "2"
+        },
+        {
+          "name": "accrued_interest",
+          "pic": "S9(9)V99",
+          "rounding": "ROUND_HALF_UP",
+          "scale": "2"
+        }
+      ],
+      "stages": [
+        {
+          "elapsed_ms": 0,
+          "name": "legacy_parser",
+          "source": "cache",
+          "status": "ok"
+        },
+        {
+          "elapsed_ms": 0,
+          "name": "cloud_architect",
+          "source": "cache",
+          "status": "ok"
+        }
+      ],
+      "verified_python_code": "_COB_MAX_DIGITS = 38\n\ndef _scaled_trunc(value, scale):\n    return int(value.scaleb(scale))\n\ndef _store_unsigned(value, int_digits, scale):\n    return abs(_scaled_trunc(value, scale)) % 10 ** (int_digits + scale)\n\ndef _store_signed(value, int_digits, scale):\n    scaled = _scaled_trunc(value, scale)\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _wrap_unsigned(scaled, int_digits, scale):\n    return abs(scaled) % 10 ** (int_digits + scale)\n\ndef _wrap_signed(scaled, int_digits, scale):\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _cob_div(n, n_scale, d, d_scale):\n    scale = n_scale - d_scale\n    shift = _COB_MAX_DIGITS + (-scale if scale < 0 else 0)\n    num = n * 10 ** shift\n    q = abs(num) // abs(d)\n    if (num < 0) != (d < 0):\n        q = -q\n    return (q, scale + shift)\n\ndef _round_half_up(value, scale, to_scale):\n    if scale <= to_scale:\n        return value * 10 ** (to_scale - scale)\n    unit = 10 ** (scale - to_scale)\n    mag, rem = divmod(abs(value), unit)\n    if rem * 2 >= unit:\n        mag += 1\n    return -mag if value < 0 else mag\n\ndef _to_decimal(scaled, scale):\n    return Decimal(scaled).scaleb(-scale)\n\ndef compound_int(principal, annual_rate_pct, compounds_per_year, years):\n    p = _store_unsigned(principal, 9, 2)\n    r = _store_unsigned(annual_rate_pct, 3, 3)\n    per_year = abs(int(compounds_per_year)) % 100\n    yrs = abs(int(years)) % 100\n    periods = per_year * yrs\n    balance = p\n    if periods > 0:\n        denom = 100 * per_year * 1000\n        numer = denom + r\n        for _ in range(periods):\n            q, qs = _cob_div(balance * numer, 5, denom, 3)\n            balance = _wrap_unsigned(_round_half_up(q, qs, 2), 9, 2)\n    maturity = balance\n    accrued = _wrap_signed(maturity - p, 9, 2)\n    accrued_shown = _wrap_signed(accrued, 8, 2)\n    return {'maturity_amount': _to_decimal(maturity, 2), 'accrued_interest': _to_decimal(accrued_shown, 2)}\n\ndef calculate(**kwargs):\n    return compound_int(**kwargs)\n"
+    }
+  },
+  "daily_ledger": {
+    "false": {
+      "business_rules": [
+        "Inputs are the opening balance (signed), the day's total deposits, the day's total withdrawals, the overdraft threshold (signed, so it can be negative) and the overdraft fee, all in two-decimal amounts.",
+        "The day's balance is the opening balance plus deposits minus withdrawals.",
+        "If that balance is strictly below the overdraft threshold, the overdraft fee is applied and the overdraft flag is 1. A balance exactly equal to the threshold is not an overdraft.",
+        "Otherwise the fee applied is 0.00 and the overdraft flag is 0.",
+        "The closing balance is the day's balance minus the fee applied. It is signed and can go negative.",
+        "No ROUNDED clause is used anywhere: every store truncates toward zero (COBOL default). All amounts have two decimals, so no rounding actually occurs for valid inputs.",
+        "Fee applied is stored in PIC 9(5)V99 and the flag in PIC 9; the closing balance is stored in PIC S9(9)V99."
+      ],
+      "dashboard_metadata": {
+        "inputs": [
+          {
+            "label": "Opening Balance",
+            "max": "100000000.00",
+            "min": "-100000000.00",
+            "name": "opening_balance",
+            "step": "10.00",
+            "type": "decimal"
+          },
+          {
+            "label": "Deposits",
+            "max": "100000000.00",
+            "min": "0.00",
+            "name": "deposits",
+            "step": "10.00",
+            "type": "decimal"
+          },
+          {
+            "label": "Withdrawals",
+            "max": "100000000.00",
+            "min": "0.00",
+            "name": "withdrawals",
+            "step": "10.00",
+            "type": "decimal"
+          },
+          {
+            "label": "Overdraft Threshold",
+            "max": "100000000.00",
+            "min": "-100000000.00",
+            "name": "overdraft_threshold",
+            "step": "10.00",
+            "type": "decimal"
+          },
+          {
+            "label": "Overdraft Fee",
+            "max": "99999.99",
+            "min": "0.00",
+            "name": "overdraft_fee",
+            "step": "1.00",
+            "type": "decimal"
+          }
+        ],
+        "outputs": [
+          {
+            "format": "currency",
+            "label": "Closing Balance",
+            "name": "closing_balance"
+          },
+          {
+            "format": "currency",
+            "label": "Fee Applied",
+            "name": "fee_applied"
+          },
+          {
+            "format": "flag",
+            "label": "Overdraft Flag",
+            "name": "overdraft_flag"
+          }
+        ]
+      },
+      "export_fastapi_code": "\"\"\"Verified COBOL resurrection: exact-Decimal calculation exposed as a FastAPI service.\n\nRun with:  uvicorn <module_name>:app\nAll request and response values are strings holding Decimal numbers.\n\"\"\"\nimport decimal as _decimal\nfrom decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP\n\nContext = _decimal.Context(prec=60, rounding=ROUND_HALF_UP)\n\n# ---- verified code (embedded verbatim) ----\n_COB_MAX_DIGITS = 38\n\ndef _scaled_trunc(value, scale):\n    return int(value.scaleb(scale))\n\ndef _store_unsigned(value, int_digits, scale):\n    return abs(_scaled_trunc(value, scale)) % 10 ** (int_digits + scale)\n\ndef _store_signed(value, int_digits, scale):\n    scaled = _scaled_trunc(value, scale)\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _wrap_unsigned(scaled, int_digits, scale):\n    return abs(scaled) % 10 ** (int_digits + scale)\n\ndef _wrap_signed(scaled, int_digits, scale):\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _cob_div(n, n_scale, d, d_scale):\n    scale = n_scale - d_scale\n    shift = _COB_MAX_DIGITS + (-scale if scale < 0 else 0)\n    num = n * 10 ** shift\n    q = abs(num) // abs(d)\n    if (num < 0) != (d < 0):\n        q = -q\n    return (q, scale + shift)\n\ndef _round_half_up(value, scale, to_scale):\n    if scale <= to_scale:\n        return value * 10 ** (to_scale - scale)\n    unit = 10 ** (scale - to_scale)\n    mag, rem = divmod(abs(value), unit)\n    if rem * 2 >= unit:\n        mag += 1\n    return -mag if value < 0 else mag\n\ndef _to_decimal(scaled, scale):\n    return Decimal(scaled).scaleb(-scale)\n\ndef daily_ledger(opening_balance, deposits, withdrawals, overdraft_threshold=Decimal('0.00'), overdraft_fee=Decimal('0.00')):\n    opening = _store_signed(opening_balance, 9, 2)\n    dep = _store_unsigned(deposits, 9, 2)\n    wd = _store_unsigned(withdrawals, 9, 2)\n    threshold = _store_signed(overdraft_threshold, 9, 2)\n    fee = _store_unsigned(overdraft_fee, 5, 2)\n    balance = _wrap_signed(opening + dep - wd, 9, 2)\n    if balance < threshold:\n        fee_applied, flag = (fee, 1)\n    else:\n        fee_applied, flag = (0, 0)\n    closing = _wrap_signed(balance - fee_applied, 9, 2)\n    return {'closing_balance': _to_decimal(closing, 2), 'fee_applied': _to_decimal(fee_applied, 2), 'overdraft_flag': Decimal(flag)}\n\ndef calculate(**kwargs):\n    return daily_ledger(**kwargs)\n\n\n# ---- end of verified code ----\n_vc_entry = calculate\n\nfrom fastapi import Body as _vc_Body, FastAPI as _vc_FastAPI, HTTPException as _vc_HTTPException\n\n# (name, scale) in contract order. Scale 0 means the function receives an int.\n_VC_INPUTS = (('opening_balance', 2), ('deposits', 2), ('withdrawals', 2), ('overdraft_threshold', 2), ('overdraft_fee', 2))\n_VC_OUTPUTS = ('closing_balance', 'fee_applied', 'overdraft_flag')\n\napp = _vc_FastAPI(title=\"Verified COBOL calculation\")\n\n\ndef _vc_parse(name, scale, text):\n    try:\n        value = Decimal(text.strip())\n    except (_decimal.InvalidOperation, ValueError):\n        raise _vc_HTTPException(status_code=422, detail=name + \" must be a decimal string\")\n    if not value.is_finite():\n        raise _vc_HTTPException(status_code=422, detail=name + \" must be a finite decimal\")\n    if scale == 0:\n        if value != value.to_integral_value():\n            raise _vc_HTTPException(status_code=422, detail=name + \" must be a whole number\")\n        return int(value)\n    return value\n\n\n@app.post(\"/calculate\")\ndef _vc_calculate(payload: dict[str, str] = _vc_Body(...)) -> dict[str, str]:\n    expected = [name for name, _ in _VC_INPUTS]\n    if sorted(payload) != sorted(expected):\n        raise _vc_HTTPException(\n            status_code=422, detail=\"expected exactly these string fields: \" + \", \".join(expected)\n        )\n    kwargs = {name: _vc_parse(name, scale, payload[name]) for name, scale in _VC_INPUTS}\n    raw = _vc_entry(**kwargs)\n    result = {}\n    for key, value in raw.items():\n        if isinstance(value, bool) or not isinstance(value, (Decimal, int)):\n            raise _vc_HTTPException(status_code=500, detail=\"calculation returned a non-Decimal value\")\n        result[key] = str(Decimal(value))\n    missing = [name for name in _VC_OUTPUTS if name not in result]\n    if missing:\n        raise _vc_HTTPException(status_code=500, detail=\"calculation did not return: \" + \", \".join(missing))\n    return result\n",
+      "pic_mappings": [
+        {
+          "name": "opening_balance",
+          "pic": "S9(9)V99",
+          "rounding": "ROUND_DOWN",
+          "scale": "2"
+        },
+        {
+          "name": "deposits",
+          "pic": "9(9)V99",
+          "rounding": "ROUND_DOWN",
+          "scale": "2"
+        },
+        {
+          "name": "withdrawals",
+          "pic": "9(9)V99",
+          "rounding": "ROUND_DOWN",
+          "scale": "2"
+        },
+        {
+          "name": "overdraft_threshold",
+          "pic": "S9(9)V99",
+          "rounding": "ROUND_DOWN",
+          "scale": "2"
+        },
+        {
+          "name": "overdraft_fee",
+          "pic": "9(5)V99",
+          "rounding": "ROUND_DOWN",
+          "scale": "2"
+        },
+        {
+          "name": "closing_balance",
+          "pic": "S9(9)V99",
+          "rounding": "ROUND_DOWN",
+          "scale": "2"
+        },
+        {
+          "name": "fee_applied",
+          "pic": "9(5)V99",
+          "rounding": "ROUND_DOWN",
+          "scale": "2"
+        },
+        {
+          "name": "overdraft_flag",
+          "pic": "9(1)",
+          "rounding": "ROUND_DOWN",
+          "scale": "0"
+        }
+      ],
+      "stages": [
+        {
+          "elapsed_ms": 0,
+          "name": "legacy_parser",
+          "source": "cache",
+          "status": "ok"
+        },
+        {
+          "elapsed_ms": 0,
+          "name": "cloud_architect",
+          "source": "cache",
+          "status": "ok"
+        }
+      ],
+      "verified_python_code": "_COB_MAX_DIGITS = 38\n\ndef _scaled_trunc(value, scale):\n    return int(value.scaleb(scale))\n\ndef _store_unsigned(value, int_digits, scale):\n    return abs(_scaled_trunc(value, scale)) % 10 ** (int_digits + scale)\n\ndef _store_signed(value, int_digits, scale):\n    scaled = _scaled_trunc(value, scale)\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _wrap_unsigned(scaled, int_digits, scale):\n    return abs(scaled) % 10 ** (int_digits + scale)\n\ndef _wrap_signed(scaled, int_digits, scale):\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _cob_div(n, n_scale, d, d_scale):\n    scale = n_scale - d_scale\n    shift = _COB_MAX_DIGITS + (-scale if scale < 0 else 0)\n    num = n * 10 ** shift\n    q = abs(num) // abs(d)\n    if (num < 0) != (d < 0):\n        q = -q\n    return (q, scale + shift)\n\ndef _round_half_up(value, scale, to_scale):\n    if scale <= to_scale:\n        return value * 10 ** (to_scale - scale)\n    unit = 10 ** (scale - to_scale)\n    mag, rem = divmod(abs(value), unit)\n    if rem * 2 >= unit:\n        mag += 1\n    return -mag if value < 0 else mag\n\ndef _to_decimal(scaled, scale):\n    return Decimal(scaled).scaleb(-scale)\n\ndef daily_ledger(opening_balance, deposits, withdrawals, overdraft_threshold=Decimal('0.00'), overdraft_fee=Decimal('0.00')):\n    opening = _store_signed(opening_balance, 9, 2)\n    dep = _store_unsigned(deposits, 9, 2)\n    wd = _store_unsigned(withdrawals, 9, 2)\n    threshold = _store_signed(overdraft_threshold, 9, 2)\n    fee = _store_unsigned(overdraft_fee, 5, 2)\n    balance = _wrap_signed(opening + dep - wd, 9, 2)\n    if balance < threshold:\n        fee_applied, flag = (fee, 1)\n    else:\n        fee_applied, flag = (0, 0)\n    closing = _wrap_signed(balance - fee_applied, 9, 2)\n    return {'closing_balance': _to_decimal(closing, 2), 'fee_applied': _to_decimal(fee_applied, 2), 'overdraft_flag': Decimal(flag)}\n\ndef calculate(**kwargs):\n    return daily_ledger(**kwargs)\n"
+    },
+    "true": {
+      "business_rules": [
+        "Inputs are the opening balance (signed), the day's total deposits, the day's total withdrawals, the overdraft threshold (signed, so it can be negative) and the overdraft fee, all in two-decimal amounts.",
+        "The day's balance is the opening balance plus deposits minus withdrawals.",
+        "If that balance is strictly below the overdraft threshold, the overdraft fee is applied and the overdraft flag is 1. A balance exactly equal to the threshold is not an overdraft.",
+        "Otherwise the fee applied is 0.00 and the overdraft flag is 0.",
+        "The closing balance is the day's balance minus the fee applied. It is signed and can go negative.",
+        "No ROUNDED clause is used anywhere: every store truncates toward zero (COBOL default). All amounts have two decimals, so no rounding actually occurs for valid inputs.",
+        "Fee applied is stored in PIC 9(5)V99 and the flag in PIC 9; the closing balance is stored in PIC S9(9)V99."
+      ],
+      "dashboard_metadata": {
+        "inputs": [
+          {
+            "label": "Opening Balance",
+            "max": "100000000.00",
+            "min": "-100000000.00",
+            "name": "opening_balance",
+            "step": "10.00",
+            "type": "decimal"
+          },
+          {
+            "label": "Deposits",
+            "max": "100000000.00",
+            "min": "0.00",
+            "name": "deposits",
+            "step": "10.00",
+            "type": "decimal"
+          },
+          {
+            "label": "Withdrawals",
+            "max": "100000000.00",
+            "min": "0.00",
+            "name": "withdrawals",
+            "step": "10.00",
+            "type": "decimal"
+          },
+          {
+            "label": "Overdraft Threshold",
+            "max": "100000000.00",
+            "min": "-100000000.00",
+            "name": "overdraft_threshold",
+            "step": "10.00",
+            "type": "decimal"
+          },
+          {
+            "label": "Overdraft Fee",
+            "max": "99999.99",
+            "min": "0.00",
+            "name": "overdraft_fee",
+            "step": "1.00",
+            "type": "decimal"
+          }
+        ],
+        "outputs": [
+          {
+            "format": "currency",
+            "label": "Closing Balance",
+            "name": "closing_balance"
+          },
+          {
+            "format": "currency",
+            "label": "Fee Applied",
+            "name": "fee_applied"
+          },
+          {
+            "format": "flag",
+            "label": "Overdraft Flag",
+            "name": "overdraft_flag"
+          }
+        ]
+      },
+      "export_fastapi_code": "\"\"\"Verified COBOL resurrection: exact-Decimal calculation exposed as a FastAPI service.\n\nRun with:  uvicorn <module_name>:app\nAll request and response values are strings holding Decimal numbers.\n\"\"\"\nimport decimal as _decimal\nfrom decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP\n\nContext = _decimal.Context(prec=60, rounding=ROUND_HALF_UP)\n\n# ---- verified code (embedded verbatim) ----\n_COB_MAX_DIGITS = 38\n\ndef _scaled_trunc(value, scale):\n    return int(value.scaleb(scale))\n\ndef _store_unsigned(value, int_digits, scale):\n    return abs(_scaled_trunc(value, scale)) % 10 ** (int_digits + scale)\n\ndef _store_signed(value, int_digits, scale):\n    scaled = _scaled_trunc(value, scale)\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _wrap_unsigned(scaled, int_digits, scale):\n    return abs(scaled) % 10 ** (int_digits + scale)\n\ndef _wrap_signed(scaled, int_digits, scale):\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _cob_div(n, n_scale, d, d_scale):\n    scale = n_scale - d_scale\n    shift = _COB_MAX_DIGITS + (-scale if scale < 0 else 0)\n    num = n * 10 ** shift\n    q = abs(num) // abs(d)\n    if (num < 0) != (d < 0):\n        q = -q\n    return (q, scale + shift)\n\ndef _round_half_up(value, scale, to_scale):\n    if scale <= to_scale:\n        return value * 10 ** (to_scale - scale)\n    unit = 10 ** (scale - to_scale)\n    mag, rem = divmod(abs(value), unit)\n    if rem * 2 >= unit:\n        mag += 1\n    return -mag if value < 0 else mag\n\ndef _to_decimal(scaled, scale):\n    return Decimal(scaled).scaleb(-scale)\n\ndef daily_ledger(opening_balance, deposits, withdrawals, overdraft_threshold=Decimal('0.00'), overdraft_fee=Decimal('0.00')):\n    opening = _store_signed(opening_balance, 9, 2)\n    dep = _store_unsigned(deposits, 9, 2)\n    wd = _store_unsigned(withdrawals, 9, 2)\n    threshold = _store_signed(overdraft_threshold, 9, 2)\n    fee = _store_unsigned(overdraft_fee, 5, 2)\n    balance = _wrap_signed(opening + dep - wd, 9, 2)\n    if balance < threshold:\n        fee_applied, flag = (fee, 1)\n    else:\n        fee_applied, flag = (0, 0)\n    closing = _wrap_signed(balance - fee_applied, 9, 2)\n    return {'closing_balance': _to_decimal(closing, 2), 'fee_applied': _to_decimal(fee_applied, 2), 'overdraft_flag': Decimal(flag)}\n\ndef calculate(**kwargs):\n    return daily_ledger(**kwargs)\n\n\n# ---- end of verified code ----\n_vc_entry = calculate\n\nfrom fastapi import Body as _vc_Body, FastAPI as _vc_FastAPI, HTTPException as _vc_HTTPException\n\n# (name, scale) in contract order. Scale 0 means the function receives an int.\n_VC_INPUTS = (('opening_balance', 2), ('deposits', 2), ('withdrawals', 2), ('overdraft_threshold', 2), ('overdraft_fee', 2))\n_VC_OUTPUTS = ('closing_balance', 'fee_applied', 'overdraft_flag')\n\napp = _vc_FastAPI(title=\"Verified COBOL calculation\")\n\n\ndef _vc_parse(name, scale, text):\n    try:\n        value = Decimal(text.strip())\n    except (_decimal.InvalidOperation, ValueError):\n        raise _vc_HTTPException(status_code=422, detail=name + \" must be a decimal string\")\n    if not value.is_finite():\n        raise _vc_HTTPException(status_code=422, detail=name + \" must be a finite decimal\")\n    if scale == 0:\n        if value != value.to_integral_value():\n            raise _vc_HTTPException(status_code=422, detail=name + \" must be a whole number\")\n        return int(value)\n    return value\n\n\n@app.post(\"/calculate\")\ndef _vc_calculate(payload: dict[str, str] = _vc_Body(...)) -> dict[str, str]:\n    expected = [name for name, _ in _VC_INPUTS]\n    if sorted(payload) != sorted(expected):\n        raise _vc_HTTPException(\n            status_code=422, detail=\"expected exactly these string fields: \" + \", \".join(expected)\n        )\n    kwargs = {name: _vc_parse(name, scale, payload[name]) for name, scale in _VC_INPUTS}\n    raw = _vc_entry(**kwargs)\n    result = {}\n    for key, value in raw.items():\n        if isinstance(value, bool) or not isinstance(value, (Decimal, int)):\n            raise _vc_HTTPException(status_code=500, detail=\"calculation returned a non-Decimal value\")\n        result[key] = str(Decimal(value))\n    missing = [name for name in _VC_OUTPUTS if name not in result]\n    if missing:\n        raise _vc_HTTPException(status_code=500, detail=\"calculation did not return: \" + \", \".join(missing))\n    return result\n",
+      "pic_mappings": [
+        {
+          "name": "opening_balance",
+          "pic": "S9(9)V99",
+          "rounding": "ROUND_DOWN",
+          "scale": "2"
+        },
+        {
+          "name": "deposits",
+          "pic": "9(9)V99",
+          "rounding": "ROUND_DOWN",
+          "scale": "2"
+        },
+        {
+          "name": "withdrawals",
+          "pic": "9(9)V99",
+          "rounding": "ROUND_DOWN",
+          "scale": "2"
+        },
+        {
+          "name": "overdraft_threshold",
+          "pic": "S9(9)V99",
+          "rounding": "ROUND_DOWN",
+          "scale": "2"
+        },
+        {
+          "name": "overdraft_fee",
+          "pic": "9(5)V99",
+          "rounding": "ROUND_DOWN",
+          "scale": "2"
+        },
+        {
+          "name": "closing_balance",
+          "pic": "S9(9)V99",
+          "rounding": "ROUND_DOWN",
+          "scale": "2"
+        },
+        {
+          "name": "fee_applied",
+          "pic": "9(5)V99",
+          "rounding": "ROUND_DOWN",
+          "scale": "2"
+        },
+        {
+          "name": "overdraft_flag",
+          "pic": "9(1)",
+          "rounding": "ROUND_DOWN",
+          "scale": "0"
+        }
+      ],
+      "stages": [
+        {
+          "elapsed_ms": 0,
+          "name": "legacy_parser",
+          "source": "cache",
+          "status": "ok"
+        },
+        {
+          "elapsed_ms": 0,
+          "name": "cloud_architect",
+          "source": "cache",
+          "status": "ok"
+        }
+      ],
+      "verified_python_code": "_COB_MAX_DIGITS = 38\n\ndef _scaled_trunc(value, scale):\n    return int(value.scaleb(scale))\n\ndef _store_unsigned(value, int_digits, scale):\n    return abs(_scaled_trunc(value, scale)) % 10 ** (int_digits + scale)\n\ndef _store_signed(value, int_digits, scale):\n    scaled = _scaled_trunc(value, scale)\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _wrap_unsigned(scaled, int_digits, scale):\n    return abs(scaled) % 10 ** (int_digits + scale)\n\ndef _wrap_signed(scaled, int_digits, scale):\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _cob_div(n, n_scale, d, d_scale):\n    scale = n_scale - d_scale\n    shift = _COB_MAX_DIGITS + (-scale if scale < 0 else 0)\n    num = n * 10 ** shift\n    q = abs(num) // abs(d)\n    if (num < 0) != (d < 0):\n        q = -q\n    return (q, scale + shift)\n\ndef _round_half_up(value, scale, to_scale):\n    if scale <= to_scale:\n        return value * 10 ** (to_scale - scale)\n    unit = 10 ** (scale - to_scale)\n    mag, rem = divmod(abs(value), unit)\n    if rem * 2 >= unit:\n        mag += 1\n    return -mag if value < 0 else mag\n\ndef _to_decimal(scaled, scale):\n    return Decimal(scaled).scaleb(-scale)\n\ndef daily_ledger(opening_balance, deposits, withdrawals, overdraft_threshold=Decimal('0.00'), overdraft_fee=Decimal('0.00')):\n    opening = _store_signed(opening_balance, 9, 2)\n    dep = _store_unsigned(deposits, 9, 2)\n    wd = _store_unsigned(withdrawals, 9, 2)\n    threshold = _store_signed(overdraft_threshold, 9, 2)\n    fee = _store_unsigned(overdraft_fee, 5, 2)\n    balance = _wrap_signed(opening + dep - wd, 9, 2)\n    if balance < threshold:\n        fee_applied, flag = (fee, 1)\n    else:\n        fee_applied, flag = (0, 0)\n    closing = _wrap_signed(balance - fee_applied, 9, 2)\n    return {'closing_balance': _to_decimal(closing, 2), 'fee_applied': _to_decimal(fee_applied, 2), 'overdraft_flag': Decimal(flag)}\n\ndef calculate(**kwargs):\n    return daily_ledger(**kwargs)\n"
+    }
+  },
+  "loan_calc": {
+    "false": {
+      "business_rules": [
+        "Inputs are the loan principal (up to 9 digits plus 2 decimals), the annual interest rate as a percentage (up to 3 digits plus 3 decimals, for example 3.333) and the term in whole months (up to 3 digits).",
+        "The monthly interest rate is the annual rate divided by 1200, that is annual percent divided by 12 months and by 100.",
+        "When the term is 0 months, the monthly payment is 0.00.",
+        "When the annual rate is 0, the monthly payment is the principal divided evenly by the number of months, rounded half-up to the cent.",
+        "Otherwise the monthly payment is the standard amortization payment: principal times the monthly rate, divided by 1 minus (1 + monthly rate) raised to the power of minus the term. The whole expression is evaluated at full precision and rounded half-up (COBOL ROUNDED) once, when stored.",
+        "Total payable is the already-rounded monthly payment multiplied by the term in months, rounded half-up to the cent.",
+        "Total interest is total payable minus the principal, rounded half-up to the cent. Because the rounded payment is used, total interest can differ by a few cents from an unrounded calculation.",
+        "All three results are stored in PIC 9(9)V99 fields: two decimal places, no sign, and nine integer digits. A value too large for the field loses its high-order digits, as it does on the mainframe."
+      ],
+      "dashboard_metadata": {
+        "inputs": [
+          {
+            "label": "Principal",
+            "max": "10000000.00",
+            "min": "0.01",
+            "name": "principal",
+            "step": "100.00",
+            "type": "decimal"
+          },
+          {
+            "label": "Annual Rate %",
+            "max": "100.000",
+            "min": "0.000",
+            "name": "annual_rate_pct",
+            "step": "0.001",
+            "type": "decimal"
+          },
+          {
+            "label": "Term (Months)",
+            "max": "360",
+            "min": "1",
+            "name": "term_months",
+            "step": "1",
+            "type": "integer"
+          }
+        ],
+        "outputs": [
+          {
+            "format": "currency",
+            "label": "Monthly Payment",
+            "name": "monthly_payment"
+          },
+          {
+            "format": "currency",
+            "label": "Total Interest",
+            "name": "total_interest"
+          },
+          {
+            "format": "currency",
+            "label": "Total Payable",
+            "name": "total_payable"
+          }
+        ]
+      },
+      "export_fastapi_code": "\"\"\"Verified COBOL resurrection: exact-Decimal calculation exposed as a FastAPI service.\n\nRun with:  uvicorn <module_name>:app\nAll request and response values are strings holding Decimal numbers.\n\"\"\"\nimport decimal as _decimal\nfrom decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP\n\nContext = _decimal.Context(prec=60, rounding=ROUND_HALF_UP)\n\n# ---- verified code (embedded verbatim) ----\n_COB_MAX_DIGITS = 38\n\ndef _scaled_trunc(value, scale):\n    return int(value.scaleb(scale))\n\ndef _store_unsigned(value, int_digits, scale):\n    return abs(_scaled_trunc(value, scale)) % 10 ** (int_digits + scale)\n\ndef _store_signed(value, int_digits, scale):\n    scaled = _scaled_trunc(value, scale)\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _wrap_unsigned(scaled, int_digits, scale):\n    return abs(scaled) % 10 ** (int_digits + scale)\n\ndef _wrap_signed(scaled, int_digits, scale):\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _cob_div(n, n_scale, d, d_scale):\n    scale = n_scale - d_scale\n    shift = _COB_MAX_DIGITS + (-scale if scale < 0 else 0)\n    num = n * 10 ** shift\n    q = abs(num) // abs(d)\n    if (num < 0) != (d < 0):\n        q = -q\n    return (q, scale + shift)\n\ndef _round_half_up(value, scale, to_scale):\n    if scale <= to_scale:\n        return value * 10 ** (to_scale - scale)\n    unit = 10 ** (scale - to_scale)\n    mag, rem = divmod(abs(value), unit)\n    if rem * 2 >= unit:\n        mag += 1\n    return -mag if value < 0 else mag\n\ndef _to_decimal(scaled, scale):\n    return Decimal(scaled).scaleb(-scale)\n\ndef loan_calc(principal, annual_rate_pct, term_months):\n    p = _store_unsigned(principal, 9, 2)\n    r = _store_unsigned(annual_rate_pct, 3, 3)\n    n = abs(int(term_months)) % 1000\n    if n == 0:\n        payment = 0\n    elif r == 0:\n        q, qs = _cob_div(p, 2, n, 0)\n        payment = _round_half_up(q, qs, 2)\n    else:\n        mr, mr_s = _cob_div(r, 3, 1200, 0)\n        base = 10 ** mr_s + mr\n        power = base ** n\n        inv = 10 ** (_COB_MAX_DIGITS + mr_s * n) // power\n        denom = 10 ** _COB_MAX_DIGITS - inv\n        numer = p * mr\n        q, qs = _cob_div(numer, 2 + mr_s, denom, _COB_MAX_DIGITS)\n        payment = _round_half_up(q, qs, 2)\n    payment = _wrap_unsigned(payment, 9, 2)\n    total = _wrap_unsigned(payment * n, 9, 2)\n    interest = _wrap_unsigned(total - p, 9, 2)\n    return {'monthly_payment': _to_decimal(payment, 2), 'total_interest': _to_decimal(interest, 2), 'total_payable': _to_decimal(total, 2)}\n\ndef calculate(**kwargs):\n    return loan_calc(**kwargs)\n\n\n# ---- end of verified code ----\n_vc_entry = calculate\n\nfrom fastapi import Body as _vc_Body, FastAPI as _vc_FastAPI, HTTPException as _vc_HTTPException\n\n# (name, scale) in contract order. Scale 0 means the function receives an int.\n_VC_INPUTS = (('principal', 2), ('annual_rate_pct', 3), ('term_months', 0))\n_VC_OUTPUTS = ('monthly_payment', 'total_interest', 'total_payable')\n\napp = _vc_FastAPI(title=\"Verified COBOL calculation\")\n\n\ndef _vc_parse(name, scale, text):\n    try:\n        value = Decimal(text.strip())\n    except (_decimal.InvalidOperation, ValueError):\n        raise _vc_HTTPException(status_code=422, detail=name + \" must be a decimal string\")\n    if not value.is_finite():\n        raise _vc_HTTPException(status_code=422, detail=name + \" must be a finite decimal\")\n    if scale == 0:\n        if value != value.to_integral_value():\n            raise _vc_HTTPException(status_code=422, detail=name + \" must be a whole number\")\n        return int(value)\n    return value\n\n\n@app.post(\"/calculate\")\ndef _vc_calculate(payload: dict[str, str] = _vc_Body(...)) -> dict[str, str]:\n    expected = [name for name, _ in _VC_INPUTS]\n    if sorted(payload) != sorted(expected):\n        raise _vc_HTTPException(\n            status_code=422, detail=\"expected exactly these string fields: \" + \", \".join(expected)\n        )\n    kwargs = {name: _vc_parse(name, scale, payload[name]) for name, scale in _VC_INPUTS}\n    raw = _vc_entry(**kwargs)\n    result = {}\n    for key, value in raw.items():\n        if isinstance(value, bool) or not isinstance(value, (Decimal, int)):\n            raise _vc_HTTPException(status_code=500, detail=\"calculation returned a non-Decimal value\")\n        result[key] = str(Decimal(value))\n    missing = [name for name in _VC_OUTPUTS if name not in result]\n    if missing:\n        raise _vc_HTTPException(status_code=500, detail=\"calculation did not return: \" + \", \".join(missing))\n    return result\n",
+      "pic_mappings": [
+        {
+          "name": "principal",
+          "pic": "9(9)V99",
+          "rounding": "ROUND_DOWN",
+          "scale": "2"
+        },
+        {
+          "name": "annual_rate_pct",
+          "pic": "9(3)V999",
+          "rounding": "ROUND_DOWN",
+          "scale": "3"
+        },
+        {
+          "name": "term_months",
+          "pic": "9(3)",
+          "rounding": "ROUND_DOWN",
+          "scale": "0"
+        },
+        {
+          "name": "monthly_payment",
+          "pic": "9(9)V99",
+          "rounding": "ROUND_HALF_UP",
+          "scale": "2"
+        },
+        {
+          "name": "total_interest",
+          "pic": "9(9)V99",
+          "rounding": "ROUND_HALF_UP",
+          "scale": "2"
+        },
+        {
+          "name": "total_payable",
+          "pic": "9(9)V99",
+          "rounding": "ROUND_HALF_UP",
+          "scale": "2"
+        }
+      ],
+      "stages": [
+        {
+          "elapsed_ms": 0,
+          "name": "legacy_parser",
+          "source": "cache",
+          "status": "ok"
+        },
+        {
+          "elapsed_ms": 0,
+          "name": "cloud_architect",
+          "source": "cache",
+          "status": "ok"
+        }
+      ],
+      "verified_python_code": "_COB_MAX_DIGITS = 38\n\ndef _scaled_trunc(value, scale):\n    return int(value.scaleb(scale))\n\ndef _store_unsigned(value, int_digits, scale):\n    return abs(_scaled_trunc(value, scale)) % 10 ** (int_digits + scale)\n\ndef _store_signed(value, int_digits, scale):\n    scaled = _scaled_trunc(value, scale)\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _wrap_unsigned(scaled, int_digits, scale):\n    return abs(scaled) % 10 ** (int_digits + scale)\n\ndef _wrap_signed(scaled, int_digits, scale):\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _cob_div(n, n_scale, d, d_scale):\n    scale = n_scale - d_scale\n    shift = _COB_MAX_DIGITS + (-scale if scale < 0 else 0)\n    num = n * 10 ** shift\n    q = abs(num) // abs(d)\n    if (num < 0) != (d < 0):\n        q = -q\n    return (q, scale + shift)\n\ndef _round_half_up(value, scale, to_scale):\n    if scale <= to_scale:\n        return value * 10 ** (to_scale - scale)\n    unit = 10 ** (scale - to_scale)\n    mag, rem = divmod(abs(value), unit)\n    if rem * 2 >= unit:\n        mag += 1\n    return -mag if value < 0 else mag\n\ndef _to_decimal(scaled, scale):\n    return Decimal(scaled).scaleb(-scale)\n\ndef loan_calc(principal, annual_rate_pct, term_months):\n    p = _store_unsigned(principal, 9, 2)\n    r = _store_unsigned(annual_rate_pct, 3, 3)\n    n = abs(int(term_months)) % 1000\n    if n == 0:\n        payment = 0\n    elif r == 0:\n        q, qs = _cob_div(p, 2, n, 0)\n        payment = _round_half_up(q, qs, 2)\n    else:\n        mr, mr_s = _cob_div(r, 3, 1200, 0)\n        base = 10 ** mr_s + mr\n        power = base ** n\n        inv = 10 ** (_COB_MAX_DIGITS + mr_s * n) // power\n        denom = 10 ** _COB_MAX_DIGITS - inv\n        numer = p * mr\n        q, qs = _cob_div(numer, 2 + mr_s, denom, _COB_MAX_DIGITS)\n        payment = _round_half_up(q, qs, 2)\n    payment = _wrap_unsigned(payment, 9, 2)\n    total = _wrap_unsigned(payment * n, 9, 2)\n    interest = _wrap_unsigned(total - p, 9, 2)\n    return {'monthly_payment': _to_decimal(payment, 2), 'total_interest': _to_decimal(interest, 2), 'total_payable': _to_decimal(total, 2)}\n\ndef calculate(**kwargs):\n    return loan_calc(**kwargs)\n"
+    },
+    "true": {
+      "business_rules": [
+        "Inputs are the loan principal (up to 9 digits plus 2 decimals), the annual interest rate as a percentage (up to 3 digits plus 3 decimals, for example 3.333) and the term in whole months (up to 3 digits).",
+        "The monthly interest rate is the annual rate divided by 1200, that is annual percent divided by 12 months and by 100.",
+        "When the term is 0 months, the monthly payment is 0.00.",
+        "When the annual rate is 0, the monthly payment is the principal divided evenly by the number of months, rounded half-up to the cent.",
+        "Otherwise the monthly payment is the standard amortization payment: principal times the monthly rate, divided by 1 minus (1 + monthly rate) raised to the power of minus the term. The whole expression is evaluated at full precision and rounded half-up (COBOL ROUNDED) once, when stored.",
+        "Total payable is the already-rounded monthly payment multiplied by the term in months, rounded half-up to the cent.",
+        "Total interest is total payable minus the principal, rounded half-up to the cent. Because the rounded payment is used, total interest can differ by a few cents from an unrounded calculation.",
+        "All three results are stored in PIC 9(9)V99 fields: two decimal places, no sign, and nine integer digits. A value too large for the field loses its high-order digits, as it does on the mainframe."
+      ],
+      "dashboard_metadata": {
+        "inputs": [
+          {
+            "label": "Principal",
+            "max": "10000000.00",
+            "min": "0.01",
+            "name": "principal",
+            "step": "100.00",
+            "type": "decimal"
+          },
+          {
+            "label": "Annual Rate %",
+            "max": "100.000",
+            "min": "0.000",
+            "name": "annual_rate_pct",
+            "step": "0.001",
+            "type": "decimal"
+          },
+          {
+            "label": "Term (Months)",
+            "max": "360",
+            "min": "1",
+            "name": "term_months",
+            "step": "1",
+            "type": "integer"
+          }
+        ],
+        "outputs": [
+          {
+            "format": "currency",
+            "label": "Monthly Payment",
+            "name": "monthly_payment"
+          },
+          {
+            "format": "currency",
+            "label": "Total Interest",
+            "name": "total_interest"
+          },
+          {
+            "format": "currency",
+            "label": "Total Payable",
+            "name": "total_payable"
+          }
+        ]
+      },
+      "export_fastapi_code": "\"\"\"Verified COBOL resurrection: exact-Decimal calculation exposed as a FastAPI service.\n\nRun with:  uvicorn <module_name>:app\nAll request and response values are strings holding Decimal numbers.\n\"\"\"\nimport decimal as _decimal\nfrom decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP\n\nContext = _decimal.Context(prec=60, rounding=ROUND_HALF_UP)\n\n# ---- verified code (embedded verbatim) ----\n_COB_MAX_DIGITS = 38\n\ndef _scaled_trunc(value, scale):\n    return int(value.scaleb(scale))\n\ndef _store_unsigned(value, int_digits, scale):\n    return abs(_scaled_trunc(value, scale)) % 10 ** (int_digits + scale)\n\ndef _store_signed(value, int_digits, scale):\n    scaled = _scaled_trunc(value, scale)\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _wrap_unsigned(scaled, int_digits, scale):\n    return abs(scaled) % 10 ** (int_digits + scale)\n\ndef _wrap_signed(scaled, int_digits, scale):\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _cob_div(n, n_scale, d, d_scale):\n    scale = n_scale - d_scale\n    shift = _COB_MAX_DIGITS + (-scale if scale < 0 else 0)\n    num = n * 10 ** shift\n    q = abs(num) // abs(d)\n    if (num < 0) != (d < 0):\n        q = -q\n    return (q, scale + shift)\n\ndef _round_half_up(value, scale, to_scale):\n    if scale <= to_scale:\n        return value * 10 ** (to_scale - scale)\n    unit = 10 ** (scale - to_scale)\n    mag, rem = divmod(abs(value), unit)\n    if rem * 2 >= unit:\n        mag += 1\n    return -mag if value < 0 else mag\n\ndef _to_decimal(scaled, scale):\n    return Decimal(scaled).scaleb(-scale)\n\ndef loan_calc(principal, annual_rate_pct, term_months):\n    p = _store_unsigned(principal, 9, 2)\n    r = _store_unsigned(annual_rate_pct, 3, 3)\n    n = abs(int(term_months)) % 1000\n    if n == 0:\n        payment = 0\n    elif r == 0:\n        q, qs = _cob_div(p, 2, n, 0)\n        payment = _round_half_up(q, qs, 2)\n    else:\n        mr, mr_s = _cob_div(r, 3, 1200, 0)\n        base = 10 ** mr_s + mr\n        power = base ** n\n        inv = 10 ** (_COB_MAX_DIGITS + mr_s * n) // power\n        denom = 10 ** _COB_MAX_DIGITS - inv\n        numer = p * mr\n        q, qs = _cob_div(numer, 2 + mr_s, denom, _COB_MAX_DIGITS)\n        payment = _round_half_up(q, qs, 2)\n    payment = _wrap_unsigned(payment, 9, 2)\n    total = _wrap_unsigned(payment * n, 9, 2)\n    interest = _wrap_unsigned(total - p, 9, 2)\n    return {'monthly_payment': _to_decimal(payment, 2), 'total_interest': _to_decimal(interest, 2), 'total_payable': _to_decimal(total, 2)}\n\ndef calculate(**kwargs):\n    return loan_calc(**kwargs)\n\n\n# ---- end of verified code ----\n_vc_entry = calculate\n\nfrom fastapi import Body as _vc_Body, FastAPI as _vc_FastAPI, HTTPException as _vc_HTTPException\n\n# (name, scale) in contract order. Scale 0 means the function receives an int.\n_VC_INPUTS = (('principal', 2), ('annual_rate_pct', 3), ('term_months', 0))\n_VC_OUTPUTS = ('monthly_payment', 'total_interest', 'total_payable')\n\napp = _vc_FastAPI(title=\"Verified COBOL calculation\")\n\n\ndef _vc_parse(name, scale, text):\n    try:\n        value = Decimal(text.strip())\n    except (_decimal.InvalidOperation, ValueError):\n        raise _vc_HTTPException(status_code=422, detail=name + \" must be a decimal string\")\n    if not value.is_finite():\n        raise _vc_HTTPException(status_code=422, detail=name + \" must be a finite decimal\")\n    if scale == 0:\n        if value != value.to_integral_value():\n            raise _vc_HTTPException(status_code=422, detail=name + \" must be a whole number\")\n        return int(value)\n    return value\n\n\n@app.post(\"/calculate\")\ndef _vc_calculate(payload: dict[str, str] = _vc_Body(...)) -> dict[str, str]:\n    expected = [name for name, _ in _VC_INPUTS]\n    if sorted(payload) != sorted(expected):\n        raise _vc_HTTPException(\n            status_code=422, detail=\"expected exactly these string fields: \" + \", \".join(expected)\n        )\n    kwargs = {name: _vc_parse(name, scale, payload[name]) for name, scale in _VC_INPUTS}\n    raw = _vc_entry(**kwargs)\n    result = {}\n    for key, value in raw.items():\n        if isinstance(value, bool) or not isinstance(value, (Decimal, int)):\n            raise _vc_HTTPException(status_code=500, detail=\"calculation returned a non-Decimal value\")\n        result[key] = str(Decimal(value))\n    missing = [name for name in _VC_OUTPUTS if name not in result]\n    if missing:\n        raise _vc_HTTPException(status_code=500, detail=\"calculation did not return: \" + \", \".join(missing))\n    return result\n",
+      "pic_mappings": [
+        {
+          "name": "principal",
+          "pic": "9(9)V99",
+          "rounding": "ROUND_DOWN",
+          "scale": "2"
+        },
+        {
+          "name": "annual_rate_pct",
+          "pic": "9(3)V999",
+          "rounding": "ROUND_DOWN",
+          "scale": "3"
+        },
+        {
+          "name": "term_months",
+          "pic": "9(3)",
+          "rounding": "ROUND_DOWN",
+          "scale": "0"
+        },
+        {
+          "name": "monthly_payment",
+          "pic": "9(9)V99",
+          "rounding": "ROUND_HALF_UP",
+          "scale": "2"
+        },
+        {
+          "name": "total_interest",
+          "pic": "9(9)V99",
+          "rounding": "ROUND_HALF_UP",
+          "scale": "2"
+        },
+        {
+          "name": "total_payable",
+          "pic": "9(9)V99",
+          "rounding": "ROUND_HALF_UP",
+          "scale": "2"
+        }
+      ],
+      "stages": [
+        {
+          "elapsed_ms": 0,
+          "name": "legacy_parser",
+          "source": "cache",
+          "status": "ok"
+        },
+        {
+          "elapsed_ms": 0,
+          "name": "cloud_architect",
+          "source": "cache",
+          "status": "ok"
+        }
+      ],
+      "verified_python_code": "_COB_MAX_DIGITS = 38\n\ndef _scaled_trunc(value, scale):\n    return int(value.scaleb(scale))\n\ndef _store_unsigned(value, int_digits, scale):\n    return abs(_scaled_trunc(value, scale)) % 10 ** (int_digits + scale)\n\ndef _store_signed(value, int_digits, scale):\n    scaled = _scaled_trunc(value, scale)\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _wrap_unsigned(scaled, int_digits, scale):\n    return abs(scaled) % 10 ** (int_digits + scale)\n\ndef _wrap_signed(scaled, int_digits, scale):\n    mag = abs(scaled) % 10 ** (int_digits + scale)\n    return -mag if scaled < 0 else mag\n\ndef _cob_div(n, n_scale, d, d_scale):\n    scale = n_scale - d_scale\n    shift = _COB_MAX_DIGITS + (-scale if scale < 0 else 0)\n    num = n * 10 ** shift\n    q = abs(num) // abs(d)\n    if (num < 0) != (d < 0):\n        q = -q\n    return (q, scale + shift)\n\ndef _round_half_up(value, scale, to_scale):\n    if scale <= to_scale:\n        return value * 10 ** (to_scale - scale)\n    unit = 10 ** (scale - to_scale)\n    mag, rem = divmod(abs(value), unit)\n    if rem * 2 >= unit:\n        mag += 1\n    return -mag if value < 0 else mag\n\ndef _to_decimal(scaled, scale):\n    return Decimal(scaled).scaleb(-scale)\n\ndef loan_calc(principal, annual_rate_pct, term_months):\n    p = _store_unsigned(principal, 9, 2)\n    r = _store_unsigned(annual_rate_pct, 3, 3)\n    n = abs(int(term_months)) % 1000\n    if n == 0:\n        payment = 0\n    elif r == 0:\n        q, qs = _cob_div(p, 2, n, 0)\n        payment = _round_half_up(q, qs, 2)\n    else:\n        mr, mr_s = _cob_div(r, 3, 1200, 0)\n        base = 10 ** mr_s + mr\n        power = base ** n\n        inv = 10 ** (_COB_MAX_DIGITS + mr_s * n) // power\n        denom = 10 ** _COB_MAX_DIGITS - inv\n        numer = p * mr\n        q, qs = _cob_div(numer, 2 + mr_s, denom, _COB_MAX_DIGITS)\n        payment = _round_half_up(q, qs, 2)\n    payment = _wrap_unsigned(payment, 9, 2)\n    total = _wrap_unsigned(payment * n, 9, 2)\n    interest = _wrap_unsigned(total - p, 9, 2)\n    return {'monthly_payment': _to_decimal(payment, 2), 'total_interest': _to_decimal(interest, 2), 'total_payable': _to_decimal(total, 2)}\n\ndef calculate(**kwargs):\n    return loan_calc(**kwargs)\n"
+    }
+  }
+}

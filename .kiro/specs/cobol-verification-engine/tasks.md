@@ -227,8 +227,23 @@ The design specifies Python 3.12, so no language prompt is needed. Work proceeds
     - `/health` shape and single `cobc --version` call, missing-`cobc` case, CORS origin handling, `/api/presets` shape and read-once caching, `/api/verify` repeated identical calls both invoke the compiler or binary, 128 KB body limit, `/api/calculate` happy path per preset and under 1.5 s
     - _Requirements: 14.1, 14.3, 14.4, 15.2, 15.3, 16.1, 16.4, 17.14, 17.15, 18.1, 18.2, 18.6_
 
-- [-] 10. Final checkpoint - Ensure all tests pass
+- [x] 10. Final checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
+
+## Resurrection Pipeline Extension
+
+The resurrection-pipeline spec extends this engine. Its full plan, sub-tasks and requirement links live in `.kiro/specs/resurrection-pipeline/tasks.md`. The top-level tasks below are mirrored here with ids 11 to 20 (tagged `[RP1]` to `[RP10]` after their numbers in the source spec) so they do not collide with the ids above.
+
+- [x] 11. [RP1] Implement the pipeline cache
+- [x] 12. [RP2] Implement the LLM client and budget tracker
+- [x] 13. [RP3] Define pipeline data models, export template and test stub
+- [x] 14. [RP4] Implement the self-healing loop
+- [x] 15. [RP5] Implement the pipeline orchestration, demo mode and preset bundles
+- [x] 16. [RP6] Checkpoint - Ensure all tests pass
+- [x] 17. [RP7] Add the resurrect and export endpoints
+- [x] 18. [RP8] Implement the MCP server
+- [x] 19. [RP9] Add hooks, devcontainer and image contents
+- [x] 20. [RP10] Checkpoint - Ensure all tests pass
 
 ## Notes
 
@@ -262,7 +277,12 @@ The design specifies Python 3.12, so no language prompt is needed. Work proceeds
     { "id": 16, "tasks": ["9.3"] },
     { "id": 17, "tasks": ["9.4"] },
     { "id": 18, "tasks": ["9.5", "9.6", "9.7", "9.8"] },
-    { "id": 19, "tasks": ["10"] }
+    { "id": 19, "tasks": ["10"] },
+    { "id": 20, "tasks": ["11", "12", "13"] },
+    { "id": 21, "tasks": ["14", "15"] },
+    { "id": 22, "tasks": ["16"] },
+    { "id": 23, "tasks": ["17", "18", "19"] },
+    { "id": 24, "tasks": ["20"] }
   ]
 }
 ```

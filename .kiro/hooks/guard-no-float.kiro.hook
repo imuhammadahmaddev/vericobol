@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "name": "Guard: No IEEE-754 Float in Financial Math",
+  "description": "On any backend/app Python edit, scans for float() calls, float literals, float annotations and math.pow outside the Float_Bug_Demo section.",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": ["backend/app/**/*.py"]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A file under backend/app was edited. Run `python backend/tools/guard_no_float.py <edited file>` (or in Docker: `docker run --rm -v \"$PWD/backend:/app\" -w /app vericobol-backend python tools/guard_no_float.py app/<file>.py`). Financial math must use decimal.Decimal only; never float(), float literals, float annotations or math.pow. The only allowed exceptions are the *_float_bug / _fb_* functions and FLOAT_BUG_REGISTRY in reference_models.py (the demo section), and non-monetary timing values marked with an inline `# float-ok: timing` pragma. If the guard reports findings in financial code, replace them with Decimal and explicit quantization."
+  }
+}

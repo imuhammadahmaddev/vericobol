@@ -1,7 +1,10 @@
-__pycache__/
-*.pyc
+**/__pycache__/
+**/*.pyc
+**/*.pyo
 .pytest_cache/
+**/.pytest_cache/
 .hypothesis/
+**/.hypothesis/
 .venv/
 venv/
 .env
