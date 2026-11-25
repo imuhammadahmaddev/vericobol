@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --mainframe-bg: #0a0e0c;
+  --phosphor: #00ff66;
+  --verified: #10b981;
+  --bug: #ef4444;
+}
+
+html,
+body {
+  min-height: 100%;
+}
